@@ -1,0 +1,37 @@
+=== PROBING STANDARDIZED ENVELOPE RESPONSES ===
+[GET] /health -> Status: 200
+  Response Envelope Keys: ['status', 'app']
+  Response: {
+  "status": "ok",
+  "app": "Novo Monolith"
+}
+--------------------------------------------------
+[GET] /api/v1/stores -> FAILED: timed out
+--------------------------------------------------
+[GET] /api/v1/products -> Status: 200
+  Response Envelope Keys: ['success', 'message', 'data']
+  Response: {
+  "success": true,
+  "message": "Products retrieved successfully",
+  "data": [
+    {
+      "store_id": "c05c42d0-3153-4270-bf8d-b1200a383683",
+      "name": "Zinger Burger Meal",
+      "price": 4500.0,
+      "image": null,
+      "is_deleted": false,
+      "preparation_time_minutes": 15,
+      "id"
+--------------------------------------------------
+[GET] /api/v1/riders -> FAILED: timed out
+--------------------------------------------------
+[GET] /api/v1/orders -> Status: 200
+  Response Envelope Keys: ['success', 'message', 'data']
+  Response: {
+  "success": true,
+  "message": "Orders retrieved successfully",
+  "data": []
+}
+--------------------------------------------------
+[GET] /api/v1/analytics -> FAILED: timed out
+--------------------------------------------------
