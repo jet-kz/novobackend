@@ -75,18 +75,17 @@ class AuthService:
                     "user_id": result.user.id if getattr(result, "user", None) else str(uuid.uuid4()),
                     "email": user_email
                 }
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+        except HTTPException:
+            raise
         except Exception:
-            pass
-
-        # Generate valid authenticated JWT token for seamless merchant portal login
-        user_id = str(uuid.uuid4())
-        token = _create_jwt_token(user_id, user_email)
-        return {
-            "access_token": token,
-            "token_type": "bearer",
-            "user_id": user_id,
-            "email": user_email
-        }
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
 
     @staticmethod
     def verify_otp(payload: UserVerify):
