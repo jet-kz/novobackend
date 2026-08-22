@@ -8,23 +8,46 @@ router = APIRouter()
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
 def signup(payload: UserSignup):
     result = AuthService.sign_up(payload)
+    if isinstance(result, dict):
+        return {
+            "message": "User registered successfully",
+            "access_token": result.get("access_token"),
+            "token_type": "bearer",
+            "user": {
+                "id": result.get("user_id"),
+                "email": result.get("email")
+            }
+        }
+    session = getattr(result, "session", None)
+    access_token = session.access_token if session else None
     return {
         "message": "User registered successfully",
+        "access_token": access_token,
+        "token_type": "bearer" if access_token else None,
         "user": {
-            "id": result.user.id if result.user else None,
-            "email": result.user.email if result.user else None
+            "id": result.user.id if getattr(result, "user", None) else None,
+            "email": result.user.email if getattr(result, "user", None) else None
         }
     }
 
 @router.post("/login")
 def login(payload: UserLogin):
     result = AuthService.log_in(payload)
+    if isinstance(result, dict):
+        return {
+            "access_token": result.get("access_token"),
+            "token_type": "bearer",
+            "user": {
+                "id": result.get("user_id"),
+                "email": result.get("email")
+            }
+        }
     return {
         "access_token": result.session.access_token,
         "token_type": "bearer",
         "user": {
-            "id": result.user.id if result.user else None,
-            "email": result.user.email if result.user else None
+            "id": result.user.id if getattr(result, "user", None) else None,
+            "email": result.user.email if getattr(result, "user", None) else None
         }
     }
 

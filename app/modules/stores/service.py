@@ -1,3 +1,4 @@
+import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from fastapi import HTTPException, status
@@ -26,9 +27,34 @@ class StoreService:
 
     @staticmethod
     async def create_store(db: AsyncSession, data: dict):
+        if "merchantId" in data and "merchant_id" not in data:
+            data["merchant_id"] = data.pop("merchantId")
+        if "category" in data and "store_type" not in data:
+            data["store_type"] = data.pop("category")
+        if "store_type" not in data:
+            data["store_type"] = "restaurant"
+
+        if "merchant_id" in data and isinstance(data["merchant_id"], str):
+            try:
+                data["merchant_id"] = uuid.UUID(data["merchant_id"])
+            except Exception:
+                pass
+
+        # Strip unmapped frontend helper properties
+        data.pop("deliveryFee", None)
+        data.pop("minOrder", None)
+
+        if "slug" not in data and "name" in data:
+            import re
+            base_slug = re.sub(r'[^a-z0-9]+', '-', data["name"].lower()).strip('-')
+            data["slug"] = f"{base_slug}-{uuid.uuid4().hex[:6]}"
+
         loc = data.pop("location", None)
-        if loc:
-            data["location"] = f"SRID=4326;POINT({loc['longitude']} {loc['latitude']})"
+        if loc and isinstance(loc, dict):
+            data["location"] = f"SRID=4326;POINT({loc.get('longitude', 3.3792)} {loc.get('latitude', 6.5244)})"
+        else:
+            data["location"] = "SRID=4326;POINT(3.3792 6.5244)"
+
         store = Store(**data)
         db.add(store)
         await db.commit()

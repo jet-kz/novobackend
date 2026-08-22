@@ -9,17 +9,52 @@ CANCELLABLE_STATUSES = {"CART", "PENDING", "CONFIRMED"}
 RESTRICTED_TRANSITIONS = {"DISPATCHED", "DELIVERED", "FAILED", "CANCELLED"}
 
 
+import uuid
+from app.modules.merchants.models import Merchant
+from app.modules.stores.models import Store
+
 class OrderService:
     @staticmethod
-    async def get_all_orders(db: AsyncSession, current_user: dict, customer_id: Optional[str] = None, order_status: Optional[str] = None):
+    async def get_all_orders(db: AsyncSession, current_user: dict, store_id: Optional[str] = None, customer_id: Optional[str] = None, order_status: Optional[str] = None):
         stmt = select(Order)
         is_admin = "admin" in current_user.get("roles", [])
+
         if not is_admin:
-            stmt = stmt.where(Order.customer_id == current_user["user_id"])
-        elif customer_id:
-            stmt = stmt.where(Order.customer_id == customer_id)
+            merch_res = await db.execute(select(Merchant).where(Merchant.owner_id == current_user["user_id"], Merchant.is_deleted == False))
+            merchant = merch_res.scalar_one_or_none()
+
+            if merchant:
+                stores_res = await db.execute(select(Store.id).where(Store.merchant_id == merchant.id, Store.is_deleted == False))
+                store_ids = list(stores_res.scalars().all())
+
+                if not store_ids:
+                    return []
+
+                if store_id:
+                    try:
+                        target_uuid = uuid.UUID(store_id)
+                        if target_uuid in store_ids:
+                            stmt = stmt.where(Order.store_id == target_uuid)
+                        else:
+                            return []
+                    except Exception:
+                        return []
+                else:
+                    stmt = stmt.where(Order.store_id.in_(store_ids))
+            else:
+                stmt = stmt.where(Order.customer_id == current_user["user_id"])
+        else:
+            if store_id:
+                try:
+                    stmt = stmt.where(Order.store_id == uuid.UUID(store_id))
+                except Exception:
+                    pass
+            elif customer_id:
+                stmt = stmt.where(Order.customer_id == customer_id)
+
         if order_status:
             stmt = stmt.where(Order.status == order_status.upper())
+
         result = await db.execute(stmt)
         return result.scalars().all()
 
@@ -35,6 +70,31 @@ class OrderService:
     async def create_order(db: AsyncSession, customer_id: str, data: dict):
         data["customer_id"] = customer_id
         data["status"] = "PENDING"
+        if "id" not in data or not data["id"]:
+            data["id"] = f"ORD-{uuid.uuid4().hex[:8].upper()}"
+        if "customer_name" not in data or not data["customer_name"]:
+            data["customer_name"] = "Customer"
+        if "currency" not in data or not data["currency"]:
+            data["currency"] = "NGN"
+        if "delivery_latitude" not in data:
+            data["delivery_latitude"] = 6.5244
+        if "delivery_longitude" not in data:
+            data["delivery_longitude"] = 3.3792
+        if "delivery_address" not in data or not data["delivery_address"]:
+            data["delivery_address"] = "Standard Customer Address"
+
+        if "store_id" in data and isinstance(data["store_id"], str):
+            try:
+                data["store_id"] = uuid.UUID(data["store_id"])
+            except Exception:
+                pass
+        if "storeId" in data and "store_id" not in data:
+            try:
+                data["store_id"] = uuid.UUID(data.pop("storeId"))
+            except Exception:
+                pass
+
+        items_data = data.pop("items", [])
         order = Order(**data)
         db.add(order)
         await db.flush()
