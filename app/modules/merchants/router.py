@@ -8,6 +8,13 @@ from app.modules.merchants.service import MerchantService
 router = APIRouter()
 
 
+@router.get("/me", status_code=status.HTTP_200_OK)
+async def get_my_merchant(db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    """Get the current authenticated user's merchant profile and stores."""
+    merchant_data = await MerchantService.get_by_owner_id(db, current_user["user_id"])
+    return {"success": True, "message": "My merchant profile retrieved", "data": merchant_data}
+
+
 @router.get("", status_code=status.HTTP_200_OK)
 async def list_merchants(db: AsyncSession = Depends(get_db)):
     """List all active merchants on the platform."""

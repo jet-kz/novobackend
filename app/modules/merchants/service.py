@@ -19,6 +19,19 @@ class MerchantService:
         return merchant
 
     @staticmethod
+    async def get_by_owner_id(db: AsyncSession, owner_id: str):
+        result = await db.execute(select(Merchant).where(Merchant.owner_id == owner_id, Merchant.is_deleted == False))
+        merchant = result.scalar_one_or_none()
+        if not merchant:
+            return None
+        stores_res = await db.execute(select(Store).where(Store.merchant_id == merchant.id, Store.is_deleted == False))
+        stores = stores_res.scalars().all()
+        return {
+            "merchant": merchant,
+            "stores": stores
+        }
+
+    @staticmethod
     async def create(db: AsyncSession, owner_id: str, data: dict):
         data["owner_id"] = owner_id
         merchant = Merchant(**data)

@@ -17,7 +17,7 @@ class WalletService:
         )
         wallet = result.scalar_one_or_none()
         if not wallet:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No {currency} wallet found")
+            return await WalletService._get_or_create_wallet(db, holder_id, currency)
         return wallet
 
     @staticmethod
@@ -29,16 +29,20 @@ class WalletService:
         if not wallet:
             wallet = Wallet(holder_id=holder_id, currency=currency, balance=0.0)
             db.add(wallet)
-            await db.flush()
+            await db.commit()
+            await db.refresh(wallet)
         return wallet
 
     @staticmethod
     async def get_transactions(db: AsyncSession, holder_id: str, currency: str):
         wallet = await WalletService.get_wallet(db, holder_id, currency)
+        if not wallet:
+            return []
         result = await db.execute(
             select(WalletTransaction).where(WalletTransaction.wallet_id == wallet.id)
             .order_by(WalletTransaction.created_at.desc())
         )
+        return result.scalars().all()
         return result.scalars().all()
 
     @staticmethod

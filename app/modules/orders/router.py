@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status, Path, Body, Query
+from fastapi import APIRouter, Depends, status, Path, Body, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from app.core.database import get_db
@@ -10,13 +10,14 @@ router = APIRouter()
 
 @router.get("", status_code=status.HTTP_200_OK)
 async def list_orders(
+    store_id: Optional[str] = Query(None, description="Filter by store ID"),
     customer_id: Optional[str] = Query(None, description="Filter by customer (admin use)"),
     order_status: Optional[str] = Query(None, description="Filter by status e.g. PENDING, DELIVERED"),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """List orders. Customers see only their own. Admins can filter by customer ID or status."""
-    orders = await OrderService.get_all_orders(db, current_user=current_user, customer_id=customer_id, order_status=order_status)
+    """List orders with merchant/customer multi-tenant isolation."""
+    orders = await OrderService.get_all_orders(db, current_user=current_user, store_id=store_id, customer_id=customer_id, order_status=order_status)
     return {"success": True, "message": "Orders retrieved successfully", "data": orders}
 
 
@@ -35,10 +36,19 @@ async def create_order(payload: dict = Body(...), db: AsyncSession = Depends(get
 
 
 @router.patch("/{order_id}/status", status_code=status.HTTP_200_OK)
-async def update_order_status(order_id: str = Path(...), payload: dict = Body(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
+async def update_order_status(
+    order_id: str = Path(...),
+    status: Optional[str] = Query(None),
+    payload: Optional[dict] = Body(default=None),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
     """Update an order's status (CONFIRMED, PREPARING, DISPATCHED, DELIVERED, CANCELLED)."""
-    order = await OrderService.update_status(db, order_id, payload.get("status"), current_user["user_id"])
-    return {"success": True, "message": f"Order status updated to {payload.get('status')}", "data": order}
+    new_status = (payload.get("status") if payload and isinstance(payload, dict) else None) or status
+    if not new_status:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Status is required")
+    order = await OrderService.update_status(db, order_id, new_status, current_user["user_id"])
+    return {"success": True, "message": f"Order status updated to {new_status}", "data": order}
 
 
 @router.post("/{order_id}/cancel", status_code=status.HTTP_200_OK)
