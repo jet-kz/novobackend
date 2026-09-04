@@ -1,7 +1,12 @@
+import os
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from fastapi import HTTPException, status
 from app.modules.payments.models import Payment, PaymentTransaction, Refund
+from app.modules.orders.models import Order
+
+PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "sk_test_c816d68a9a784dadcc2a1f8c76af63c238600d76")
 
 
 class PaymentService:
@@ -32,15 +37,83 @@ class PaymentService:
         txn = PaymentTransaction(**data)
         db.add(txn)
 
-        # Auto-update payment status
+        # Auto-update payment status & order payment_status
         if data.get("status") == "success":
             payment.status = "paid"
+            # Update corresponding order status
+            order_res = await db.execute(select(Order).where(Order.id == payment.order_id))
+            order = order_res.scalar_one_or_none()
+            if order:
+                order.payment_status = "paid"
+                order.status = "PLACED"
         elif data.get("status") == "failed":
             payment.status = "failed"
 
         await db.commit()
         await db.refresh(txn)
         return txn
+
+    @staticmethod
+    async def verify_paystack_transaction(db: AsyncSession, reference: str):
+        """Verify transaction with Paystack official REST API."""
+        url = f"https://api.paystack.co/transaction/verify/{reference}"
+        headers = {
+            "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers, timeout=10.0)
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to Paystack: {str(e)}")
+
+        if response.status_code != 200:
+            res_json = response.json() if response.content else {}
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=res_json.get("message", "Paystack verification request failed")
+            )
+
+        res_data = response.json()
+        if not res_data.get("status") or res_data.get("data", {}).get("status") != "success":
+            return {
+                "verified": False,
+                "status": res_data.get("data", {}).get("status", "failed"),
+                "message": "Payment was not completed successfully"
+            }
+
+        paystack_data = res_data["data"]
+        amount = paystack_data.get("amount", 0) / 100.0
+
+        # Sync Payment & Order in Database
+        # Try matching by payment ID or order ID
+        payment_res = await db.execute(select(Payment).where((Payment.id == reference) | (Payment.order_id == reference)))
+        payment = payment_res.scalar_one_or_none()
+
+        if payment:
+            payment.status = "paid"
+            order_res = await db.execute(select(Order).where(Order.id == payment.order_id))
+            order = order_res.scalar_one_or_none()
+            if order:
+                order.payment_status = "paid"
+                order.status = "PLACED"
+        else:
+            order_res = await db.execute(select(Order).where(Order.id == reference))
+            order = order_res.scalar_one_or_none()
+            if order:
+                order.payment_status = "paid"
+                order.status = "PLACED"
+
+        await db.commit()
+
+        return {
+            "verified": True,
+            "status": "success",
+            "reference": reference,
+            "amount": amount,
+            "paystack_data": paystack_data
+        }
 
     @staticmethod
     async def request_refund(db: AsyncSession, payment_id: str, data: dict):

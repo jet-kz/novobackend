@@ -14,11 +14,38 @@ async def get_payment_for_order(order_id: str = Path(...), db: AsyncSession = De
     return {"success": True, "message": "Payment retrieved", "data": payment}
 
 
+@router.get("/verify/{reference}", status_code=status.HTTP_200_OK)
+async def verify_payment(reference: str = Path(...), db: AsyncSession = Depends(get_db)):
+    """Verify payment status directly with Paystack API and update order status."""
+    res = await PaymentService.verify_paystack_transaction(db, reference)
+    return {"success": True, "message": "Payment verified", "data": res}
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def initiate_payment(payload: dict = Body(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """Initiate a payment record for an order. Returns payment id to reference when recording the transaction."""
     payment = await PaymentService.create(db, payload)
     return {"success": True, "message": "Payment initiated", "data": payment}
+
+
+@router.post("/webhook", status_code=status.HTTP_200_OK)
+async def paystack_webhook(payload: dict = Body(...), db: AsyncSession = Depends(get_db)):
+    """Paystack webhook callback endpoint for real-time payment event notifications."""
+    event = payload.get("event")
+    data = payload.get("data", {})
+    
+    if event == "charge.success":
+        reference = data.get("reference")
+        amount = data.get("amount", 0) / 100.0  # Convert kobo to Naira
+        # Payment succeeded notification received from Paystack
+        return {
+            "status": True,
+            "message": "Paystack charge.success webhook processed",
+            "reference": reference,
+            "amount": amount
+        }
+    
+    return {"status": True, "message": f"Event '{event}' received successfully"}
 
 
 @router.post("/{payment_id}/transactions", status_code=status.HTTP_201_CREATED)
