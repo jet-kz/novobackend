@@ -17,6 +17,7 @@ from app.modules.wallets.router import router as wallets_router
 from app.modules.inventory.router import router as inventory_router
 from app.modules.analytics.router import router as analytics_router
 from app.modules.uploads.router import router as uploads_router
+from app.modules.pricing.router import router as pricing_router
 
 setup_logging()
 
@@ -48,6 +49,7 @@ app.add_middleware(
 app.include_router(auth_router,       prefix="/api/v1/auth",        tags=["Authentication"])
 app.include_router(users_router,      prefix="/api/v1/users",       tags=["User Profiles"])
 app.include_router(uploads_router,    prefix="/api/v1/uploads",     tags=["File Uploads"])
+app.include_router(pricing_router,    prefix="/api/v1/pricing",     tags=["Pricing & Promotions Engine"])
 app.include_router(merchants_router,  prefix="/api/v1/merchants",   tags=["Merchants"])
 app.include_router(stores_router,     prefix="/api/v1/stores",      tags=["Stores"])
 app.include_router(products_router,   prefix="/api/v1/products",    tags=["Products"])

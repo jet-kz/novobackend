@@ -46,3 +46,32 @@ class Refund(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     payment = relationship("Payment", back_populates="refunds")
+
+
+class LedgerEntry(Base):
+    __tablename__ = "ledger_entries"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    order_id = Column(String, nullable=False, index=True)
+    account_type = Column(String, nullable=False) # 'RESTAURANT_EARNINGS', 'PLATFORM_REVENUE', 'RIDER_EARNINGS', 'REFUND_REVERSAL'
+    entry_type = Column(String, nullable=False, default="CREDIT") # 'CREDIT', 'DEBIT'
+    amount = Column(Float, nullable=False)
+    merchant_id = Column(String, nullable=True, index=True)
+    rider_id = Column(String, nullable=True, index=True)
+    reference = Column(String, nullable=True)
+    description = Column(String, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+
+
+class Settlement(Base):
+    __tablename__ = "settlements"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    merchant_id = Column(String, nullable=False, index=True)
+    amount = Column(Float, nullable=False)
+    status = Column(String, nullable=False, default="PENDING") # PENDING, PROCESSING, SUCCESS, FAILED
+    paystack_reference = Column(String, nullable=True)
+    period_start = Column(DateTime, nullable=True)
+    period_end = Column(DateTime, nullable=True)
+    settled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())

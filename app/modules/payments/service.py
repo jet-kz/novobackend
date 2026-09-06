@@ -86,13 +86,15 @@ class PaymentService:
         paystack_data = res_data["data"]
         amount = paystack_data.get("amount", 0) / 100.0
 
+        target_order_id = reference
+
         # Sync Payment & Order in Database
-        # Try matching by payment ID or order ID
         payment_res = await db.execute(select(Payment).where((Payment.id == reference) | (Payment.order_id == reference)))
         payment = payment_res.scalar_one_or_none()
 
         if payment:
             payment.status = "paid"
+            target_order_id = payment.order_id
             order_res = await db.execute(select(Order).where(Order.id == payment.order_id))
             order = order_res.scalar_one_or_none()
             if order:
@@ -104,6 +106,19 @@ class PaymentService:
             if order:
                 order.payment_status = "paid"
                 order.status = "PLACED"
+
+        # Record Immutable Financial Ledger Split if PricingSnapshot exists
+        from app.modules.pricing.models import PricingSnapshot
+        from app.modules.payments.ledger import LedgerService
+
+        snap_res = await db.execute(select(PricingSnapshot).where(PricingSnapshot.order_id == target_order_id))
+        snapshot = snap_res.scalar_one_or_none()
+
+        if snapshot:
+            merchant_id = str(order.store_id) if (order and order.store_id) else None
+            await LedgerService.record_payment_ledger_split(
+                db, target_order_id, merchant_id, None, snapshot, reference
+            )
 
         await db.commit()
 

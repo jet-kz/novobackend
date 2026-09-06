@@ -95,9 +95,32 @@ class OrderService:
                 pass
 
         items_data = data.pop("items", [])
+        promo_code = data.pop("promo_code", None)
+
         order = Order(**data)
         db.add(order)
         await db.flush()
+
+        # Compute & Freeze Immutable Pricing Snapshot
+        from app.modules.pricing.service import PricingEngine
+        from app.modules.pricing.schemas import PricingCalculateRequest
+
+        m_id = str(order.store_id) if order.store_id else None
+        calc_req = PricingCalculateRequest(
+            subtotal=order.subtotal,
+            merchant_id=m_id,
+            user_id=customer_id,
+            promo_code=promo_code,
+            distance_km=3.0
+        )
+        breakdown = await PricingEngine.calculate_checkout_pricing(db, calc_req)
+        await PricingEngine.create_pricing_snapshot(db, order.id, breakdown)
+
+        # Sync calculated total & fees back to Order
+        order.delivery_fee = breakdown.delivery_fee
+        order.service_fee = breakdown.service_fee
+        order.total = breakdown.total
+
         # log initial status event
         history = OrderStatusHistory(
             order_id=order.id, old_status=None, new_status="PENDING", changed_by_id=customer_id
