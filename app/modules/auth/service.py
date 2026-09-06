@@ -1,25 +1,11 @@
-import time
 import uuid
-from jose import jwt
-from app.core import config
 from app.integrations.supabase.client import supabase
 from app.modules.auth.schemas import UserSignup, UserLogin, UserVerify
 from fastapi import HTTPException, status
 
-def _create_jwt_token(user_id: str, email: str) -> str:
-    payload = {
-        "sub": user_id,
-        "email": email,
-        "aud": "authenticated",
-        "role": "authenticated",
-        "exp": int(time.time()) + 86400 * 30
-    }
-    return jwt.encode(payload, config.SUPABASE_JWT_SECRET, algorithm="HS256")
-
 class AuthService:
     @staticmethod
     def sign_up(user_schema: UserSignup):
-        user_id = str(uuid.uuid4())
         user_email = user_schema.email
 
         try:
@@ -39,26 +25,24 @@ class AuthService:
                 signup_payload["options"] = {"data": user_data}
 
             result = supabase.auth.sign_up(signup_payload)
-            if getattr(result, "user", None) and getattr(result.user, "id", None):
-                user_id = result.user.id
+            
+            user_id = getattr(result.user, "id", str(uuid.uuid4())) if getattr(result, "user", None) else str(uuid.uuid4())
+            access_token = None
             if getattr(result, "session", None) and getattr(result.session, "access_token", None):
-                return {
-                    "access_token": result.session.access_token,
-                    "token_type": "bearer",
-                    "user_id": user_id,
-                    "email": user_email
-                }
-        except Exception:
-            pass
+                access_token = result.session.access_token
 
-        # Fallback to direct token generation if Supabase email confirmation or rate limit prevents instant session
-        token = _create_jwt_token(user_id, user_email)
-        return {
-            "access_token": token,
-            "token_type": "bearer",
-            "user_id": user_id,
-            "email": user_email
-        }
+            return {
+                "access_token": access_token,
+                "token_type": "bearer",
+                "user_id": user_id,
+                "email": user_email,
+                "message": "User registered successfully with Supabase Auth." if access_token else "User registered. Please check email for OTP verification."
+            }
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Supabase Registration Error: {str(e)}"
+            )
 
     @staticmethod
     def log_in(user_schema: UserLogin):
@@ -72,31 +56,21 @@ class AuthService:
                 return {
                     "access_token": result.session.access_token,
                     "token_type": "bearer",
-                    "user_id": result.user.id if getattr(result, "user", None) else str(uuid.uuid4()),
+                    "user_id": result.user.id if getattr(result, "user", None) else "",
                     "email": user_email
                 }
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid credentials. Session token not returned by Supabase Auth."
+                )
+        except HTTPException:
+            raise
         except Exception as e:
-            print(f"Supabase login note, using token fallback: {e}")
-
-        # Fallback for seeded admin & local test users using SUPABASE_JWT_SECRET
-        if user_email == "admin@novo.ng" and user_schema.password == "SuperAdminPass2026!":
-            token = _create_jwt_token("admin_super_01", user_email)
-            return {
-                "access_token": token,
-                "token_type": "bearer",
-                "user_id": "admin_super_01",
-                "email": user_email
-            }
-
-        # General fallback token generation for active dev environment
-        user_id = str(uuid.uuid4())
-        token = _create_jwt_token(user_id, user_email)
-        return {
-            "access_token": token,
-            "token_type": "bearer",
-            "user_id": user_id,
-            "email": user_email
-        }
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Supabase Login Error: {str(e)}"
+            )
 
     @staticmethod
     def verify_otp(payload: UserVerify):
@@ -106,7 +80,11 @@ class AuthService:
                 "token": payload.token,
                 "type": "signup"
             })
-            return result
+            access_token = getattr(result.session, "access_token", None) if getattr(result, "session", None) else None
+            return {
+                "access_token": access_token,
+                "user": getattr(result, "user", None)
+            }
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
