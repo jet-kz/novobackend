@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, Float, ForeignKey, DateTime, func, Integer, UniqueConstraint
+from sqlalchemy import Column, String, Boolean, Float, ForeignKey, DateTime, func, Integer, UniqueConstraint, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import uuid
@@ -35,6 +35,13 @@ class Product(Base):
     is_deleted = Column(Boolean, default=False, index=True)
     rating = Column(Float, default=0.0)
     preparation_time_minutes = Column(Integer, nullable=True)
+
+    # Dynamic Options & Specs JSON fields
+    protein_options = Column(JSON, nullable=True, default=list)
+    extras_options = Column(JSON, nullable=True, default=list)
+    specs = Column(JSON, nullable=True, default=dict)
+    option_groups = Column(JSON, nullable=True, default=list)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     store = relationship("Store", back_populates="products")

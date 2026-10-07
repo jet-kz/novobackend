@@ -52,6 +52,12 @@ class ProductService:
             data["in_stock"] = data.pop("inStock")
         if "preparationTimeMinutes" in data and "preparation_time_minutes" not in data:
             data["preparation_time_minutes"] = data.pop("preparationTimeMinutes")
+        if "proteinOptions" in data and "protein_options" not in data:
+            data["protein_options"] = data.pop("proteinOptions")
+        if "extrasOptions" in data and "extras_options" not in data:
+            data["extras_options"] = data.pop("extrasOptions")
+        if "optionGroups" in data and "option_groups" not in data:
+            data["option_groups"] = data.pop("optionGroups")
 
         if "currency" not in data or not data["currency"]:
             data["currency"] = "NGN"
@@ -70,6 +76,14 @@ class ProductService:
             except Exception:
                 pass
 
+        # If id is provided and is string, convert or strip if empty
+        pid = data.get("id")
+        if pid and isinstance(pid, str):
+            try:
+                data["id"] = uuid.UUID(pid)
+            except Exception:
+                data.pop("id", None)
+
         product = Product(**data)
         db.add(product)
         await db.commit()
@@ -78,12 +92,34 @@ class ProductService:
 
     @staticmethod
     async def update_product(db: AsyncSession, product_id: str, data: dict):
-        result = await db.execute(select(Product).where(Product.id == product_id, Product.is_deleted == False))
+        try:
+            target_uuid = uuid.UUID(product_id) if isinstance(product_id, str) else product_id
+        except Exception:
+            target_uuid = product_id
+
+        result = await db.execute(select(Product).where(Product.id == target_uuid, Product.is_deleted == False))
         product = result.scalar_one_or_none()
         if not product:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+
+        # Map camelCase to snake_case
+        field_mapping = {
+            "storeId": "store_id",
+            "inStock": "in_stock",
+            "preparationTimeMinutes": "preparation_time_minutes",
+            "proteinOptions": "protein_options",
+            "extrasOptions": "extras_options",
+            "optionGroups": "option_groups",
+        }
+        for camel, snake in field_mapping.items():
+            if camel in data:
+                data[snake] = data.pop(camel)
+
+        valid_columns = Product.__table__.columns.keys()
         for k, v in data.items():
-            setattr(product, k, v)
+            if k in valid_columns:
+                setattr(product, k, v)
+
         await db.commit()
         await db.refresh(product)
         return product

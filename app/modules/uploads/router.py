@@ -113,7 +113,7 @@ async def handle_upload(
         supabase.storage.from_(storage_bucket).upload(
             path=file_path,
             file=contents,
-            file_options={"content-type": content_type, "upsert": "true"}
+            file_options={"content-type": content_type, "upsert": "true", "cacheControl": "31536000"}
         )
         public_url = supabase.storage.from_(storage_bucket).get_public_url(file_path)
     except Exception as e:

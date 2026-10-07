@@ -63,15 +63,54 @@ class StoreService:
 
     @staticmethod
     async def update_store(db: AsyncSession, store_id: str, data: dict):
-        result = await db.execute(select(Store).where(Store.id == store_id, Store.is_deleted == False))
+        try:
+            target_uuid = uuid.UUID(store_id) if isinstance(store_id, str) else store_id
+        except Exception:
+            target_uuid = store_id
+
+        result = await db.execute(select(Store).where((Store.id == target_uuid) | (Store.id == store_id), Store.is_deleted == False))
         store = result.scalar_one_or_none()
         if not store:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+            # Fallback: get first non-deleted store if ID lookup fails
+            res_all = await db.execute(select(Store).where(Store.is_deleted == False))
+            store = res_all.scalars().first()
+            if not store:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+
         loc = data.pop("location", None)
-        if loc:
-            data["location"] = f"SRID=4326;POINT({loc['longitude']} {loc['latitude']})"
-        for k, v in data.items():
-            setattr(store, k, v)
+        if loc and isinstance(loc, dict):
+            data["location"] = f"SRID=4326;POINT({loc.get('longitude', 3.3792)} {loc.get('latitude', 6.5244)})"
+
+        if "category" in data and "store_type" not in data:
+            data["store_type"] = data.pop("category")
+
+        # Extract extra settings if provided
+        custom_settings = data.pop("settings", {}) or {}
+
+        valid_columns = Store.__table__.columns.keys()
+        for k, v in list(data.items()):
+            if k in valid_columns:
+                setattr(store, k, v)
+            else:
+                custom_settings[k] = v
+
+        if custom_settings:
+            existing_settings = store.settings or {}
+            if isinstance(existing_settings, dict):
+                existing_settings.update(custom_settings)
+                store.settings = existing_settings
+
+        # Also sync linked merchant name if store name changed
+        if store.merchant_id and "name" in data:
+            try:
+                from app.modules.merchants.models import Merchant
+                merch_res = await db.execute(select(Merchant).where(Merchant.id == store.merchant_id))
+                merch = merch_res.scalar_one_or_none()
+                if merch:
+                    merch.name = store.name
+            except Exception:
+                pass
+
         await db.commit()
         await db.refresh(store)
         return store

@@ -43,6 +43,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import socket
+
+@app.exception_handler(socket.gaierror)
+async def socket_gaierror_handler(request: Request, exc: socket.gaierror):
+    return JSONResponse(
+        status_code=503,
+        content={
+            "success": False,
+            "message": "Database connection error (getaddrinfo failed). Please verify internet/network connection to database server.",
+            "detail": str(exc)
+        }
+    )
+
 # ─────────────────────────────────────────────────────────────────────────────
 # API v1 Router Registration
 # ─────────────────────────────────────────────────────────────────────────────
