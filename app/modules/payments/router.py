@@ -3,8 +3,73 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import get_current_user, require_role
 from app.modules.payments.service import PaymentService
+from app.modules.payments.bachs_service import BachsService
 
 router = APIRouter()
+
+
+@router.post("/bachs/checkout", status_code=status.HTTP_200_OK)
+async def create_bachs_checkout(
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a Bachs hosted checkout session for an order with optional vendor split payments."""
+    order_id = payload.get("order_id")
+    amount = float(payload.get("amount", 0))
+    email = payload.get("email", current_user.get("email", "customer@novo.app"))
+    splits = payload.get("splits")
+    
+    res = await BachsService.create_checkout_session(
+        order_id=order_id,
+        amount=amount,
+        customer_email=email,
+        splits=splits
+    )
+    return {"success": True, "data": res}
+
+
+@router.post("/bachs/subaccount", status_code=status.HTTP_201_CREATED)
+async def create_bachs_subaccount(
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role("merchant_owner"))
+):
+    """Register a merchant or rider bank subaccount on Bachs for automated split disbursements."""
+    business_name = payload.get("business_name")
+    bank_code = payload.get("bank_code")
+    account_number = payload.get("account_number")
+    email = payload.get("contact_email", current_user.get("email"))
+    
+    res = await BachsService.create_vendor_subaccount(
+        business_name=business_name,
+        bank_code=bank_code,
+        account_number=account_number,
+        contact_email=email
+    )
+    return {"success": True, "message": "Bachs vendor subaccount created", "data": res}
+
+
+@router.post("/webhook/bachs", status_code=status.HTTP_200_OK)
+async def bachs_webhook(payload: dict = Body(...), db: AsyncSession = Depends(get_db)):
+    """Bachs real-time payment webhook callback endpoint."""
+    event = payload.get("event")
+    data = payload.get("data", {})
+    
+    if event in ("payment.succeeded", "charge.success"):
+        metadata = data.get("metadata", {})
+        order_id = metadata.get("order_id")
+        reference = data.get("reference")
+        amount = data.get("amount", 0) / 100.0
+        return {
+            "status": True,
+            "message": "Bachs payment succeeded webhook processed",
+            "order_id": order_id,
+            "reference": reference,
+            "amount": amount
+        }
+    
+    return {"status": True, "message": f"Bachs event '{event}' received successfully"}
 
 
 @router.get("/{order_id}", status_code=status.HTTP_200_OK)
