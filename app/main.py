@@ -79,6 +79,8 @@ app.include_router(inventory_router,  prefix="/api/v1/inventory",   tags=["Inven
 app.include_router(analytics_router,  prefix="/api/v1/analytics",   tags=["Analytics"])
 
 
+@app.get("/", tags=["Health"])
+@app.head("/", tags=["Health"])
 @app.get("/health", tags=["Health"])
 def health_check():
-    return {"status": "ok", "app": "Novo Marketplace", "version": "1.0.0"}
+    return {"status": "ok", "app": "Novo Marketplace API", "version": "1.0.0"}
