@@ -67,10 +67,20 @@ class AuthService:
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Supabase Login Error: {str(e)}"
-            )
+            err = str(e).lower()
+            if "invalid login credentials" in err or "invalid password" in err:
+                msg = "Incorrect email or password. Please try again."
+            elif "user not found" in err or "no user found" in err:
+                msg = "No account found with this email address."
+            elif "email not confirmed" in err:
+                msg = "Please verify your email before logging in."
+            elif "too many requests" in err:
+                msg = "Too many login attempts. Please wait a moment and try again."
+            elif "name or service not known" in err or "connection" in err:
+                msg = "Service temporarily unavailable. Please try again shortly."
+            else:
+                msg = "Login failed. Please check your credentials and try again."
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=msg)
 
     @staticmethod
     def verify_otp(payload: UserVerify):
