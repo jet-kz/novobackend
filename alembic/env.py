@@ -46,7 +46,7 @@ target_metadata = Base.metadata
 
 
 # get DATABASE_URL from environment variable
-database_url = os.getenv("DATABASE_URL")
+database_url = (os.getenv("DATABASE_URL") or "").strip()
 if not database_url:
     raise RuntimeError("DATABASE_URL environment variable not set")
 
