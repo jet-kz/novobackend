@@ -1,11 +1,6 @@
-import ssl as _ssl
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core import config
-
-# Build SSL context that validates Supabase pooler cert against the correct hostname
-# asyncpg needs explicit server_hostname to resolve the multi-tenant Supabase pooler via SNI
-_ssl_context = _ssl.create_default_context()
 
 # Configure async engine with production-ready connection pooling
 engine = create_async_engine(
@@ -15,11 +10,7 @@ engine = create_async_engine(
     max_overflow=20,
     pool_timeout=30,
     pool_recycle=1800,
-    connect_args={
-        "statement_cache_size": 0,
-        "ssl": _ssl_context,
-        "server_settings": {"application_name": "novo_api"},
-    },
+    connect_args={"statement_cache_size": 0},
 )
 
 # Async session generator
