@@ -209,12 +209,40 @@ async def seed():
 
     user_map = DEFAULT_UUIDS
 
-    # 1. User Profiles
+    # 1. User Profiles & Supabase Auth Users
     for u in SEED_USERS:
+        email = u["email"]
+        password = u["password"]
         role = u["role"]
-        uid = user_map[role]
         name = u["full_name"]
         phone = u["phone"]
+        uid = DEFAULT_UUIDS[role]
+
+        try:
+            # Create user in Supabase Auth using Service Role key
+            new_u = supabase.auth.admin.create_user({
+                "email": email,
+                "password": password,
+                "email_confirm": True,
+                "user_metadata": {"role": role, "full_name": name}
+            })
+            if hasattr(new_u, "user") and new_u.user:
+                uid = new_u.user.id
+                print(f"  + Created Auth User: {email} (UUID: {uid})")
+        except Exception as e:
+            # If user already exists, retrieve ID
+            try:
+                list_res = supabase.auth.admin.list_users()
+                users_list = list_res if isinstance(list_res, list) else getattr(list_res, "users", [])
+                existing = next((x for x in users_list if getattr(x, "email", None) == email), None)
+                if existing:
+                    uid = existing.id
+                    print(f"  ✓ Found existing Auth User: {email} (UUID: {uid})")
+            except Exception:
+                print(f"  ℹ Using default UUID for {email}: {uid}")
+
+        user_map[role] = uid
+
         try:
             async with AsyncSessionLocal() as db:
                 p_res = await db.execute(select(UserProfile).where(UserProfile.user_id == uid))
@@ -222,9 +250,9 @@ async def seed():
                 if not p:
                     db.add(UserProfile(user_id=uid, full_name=name, phone=phone, is_active=True))
                     await db.commit()
-                    print(f"  + UserProfile: {u['email']}")
+                    print(f"  + UserProfile created for {email}")
         except Exception as e:
-            print(f"  ⚠️ UserProfile {u['email']}: {e}")
+            print(f"  ⚠️ UserProfile {email}: {e}")
 
     merchant_user_id = user_map["merchant_owner"]
 
