@@ -8,7 +8,7 @@ PROJECT_NAME: str = "Novo Modular Monolith"
 DEBUG: bool = os.getenv("DEBUG", "False").lower() in ("true", "1", "t")
 
 # Database / Supabase configurations
-DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
