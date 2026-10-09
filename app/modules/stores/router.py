@@ -15,8 +15,33 @@ async def list_stores(
     db: AsyncSession = Depends(get_db)
 ):
     """List all active stores. Optional filters by type and open status."""
-    stores = await StoreService.get_all_stores(db, store_type=store_type, is_open=is_open)
-    return {"success": True, "message": "Stores retrieved successfully", "data": stores}
+    try:
+        stores = await StoreService.get_all_stores(db, store_type=store_type, is_open=is_open)
+        store_list = []
+        for s in stores:
+            try:
+                store_list.append({
+                    "id": str(s.id),
+                    "merchant_id": str(s.merchant_id),
+                    "name": s.name,
+                    "slug": s.slug,
+                    "store_type": s.store_type,
+                    "logo": s.logo,
+                    "banner": s.banner,
+                    "address": s.address,
+                    "phone": s.phone,
+                    "is_open": s.is_open,
+                    "is_verified": s.is_verified,
+                    "rating": getattr(s, "rating", 5.0),
+                    "settings": s.settings,
+                    "created_at": str(s.created_at) if s.created_at else None,
+                })
+            except Exception as row_err:
+                store_list.append({"id": str(s.id), "name": s.name, "error": str(row_err)})
+        return {"success": True, "message": "Stores retrieved successfully", "data": store_list}
+    except Exception as e:
+        import traceback
+        return {"success": False, "message": str(e), "detail": traceback.format_exc(), "data": []}
 
 
 @router.get("/{store_id}", status_code=status.HTTP_200_OK)
