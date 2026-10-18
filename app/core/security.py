@@ -120,6 +120,13 @@ async def get_current_user(
         stmt = select(Role.name).join(UserRole, Role.id == UserRole.role_id).where(UserRole.user_id == user_id)
         result = await db.execute(stmt)
         roles = list(result.scalars().all())
+
+        # Suspended accounts lose access immediately, even with a token that hasn't expired yet.
+        from app.modules.users.models import UserProfile
+
+        active = (await db.execute(select(UserProfile.is_active).where(UserProfile.user_id == user_id))).scalar_one_or_none()
+        if active is False:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account has been suspended. Contact info@novong.com.")
         if not roles:
             roles = ["customer"]
 

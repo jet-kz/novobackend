@@ -89,6 +89,11 @@ async def update_order_status(
     if not new_status:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Status is required")
     order = await OrderService.update_status(db, order_id, new_status, current_user, body)
+    if "admin" in (current_user.get("roles") or []) or "super_admin" in (current_user.get("roles") or []):
+        from app.core.audit import record
+
+        record(db, current_user, "order.status", "order", order_id, {"to": order["status"], "reason": body.get("reason")})
+        await db.commit()
     return {"success": True, "message": f"Order status updated to {order['status']}", "data": order}
 
 

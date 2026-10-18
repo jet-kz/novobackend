@@ -50,6 +50,10 @@ async def toggle_merchant_status(merchant_id: str = Path(...), payload: dict = B
     if new_status is None and "is_active" in payload:
         new_status = "active" if payload.get("is_active") else "suspended"
     merchant = await MerchantService.set_status(db, merchant_id, new_status)
+    from app.core.audit import record
+
+    record(db, current_user, f"merchant.{new_status}", "merchant", merchant_id, {"name": merchant.name})
+    await db.commit()
     return {"success": True, "message": f"Merchant status set to {new_status}", "data": merchant}
 
 

@@ -1,6 +1,6 @@
 import asyncio
 
-from fastapi import APIRouter, status, Depends, HTTPException
+from fastapi import APIRouter, Body, status, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.mailer import mail_enabled
 from app.modules.auth.schemas import UserSignup, UserLogin, UserVerify, ResendCode, ForgotPassword, ResetPassword
@@ -121,3 +121,24 @@ async def get_current_user_details(
         "roles": roles,
         "role": role,
     }
+
+
+@router.post("/change-password")
+async def change_password(payload: dict = Body(...), current_user: dict = Depends(get_current_user)):
+    """Signed-in user changes their password. Requires the current one."""
+    from app.integrations.supabase.client import supabase, session_client
+    from app.modules.notifications import service as notify
+
+    current = str(payload.get("current_password") or "")
+    new = str(payload.get("new_password") or "")
+    if len(new) < 8:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use at least 8 characters for the new password")
+    if new == current:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The new password must be different")
+    try:
+        await asyncio.to_thread(session_client().auth.sign_in_with_password, {"email": current_user.get("email"), "password": current})
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Your current password is incorrect")
+    await asyncio.to_thread(supabase.auth.admin.update_user_by_id, current_user["user_id"], {"password": new})
+    notify.password_changed(current_user["user_id"])
+    return {"success": True, "message": "Password changed", "data": None}

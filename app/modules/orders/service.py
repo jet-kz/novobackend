@@ -399,6 +399,11 @@ class OrderService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
         if not store.is_open:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"{store.name} is currently closed")
+        from app.modules.merchants.models import Merchant
+
+        merchant = await db.get(Merchant, store.merchant_id)
+        if not store.is_verified or not merchant or merchant.status != "active" or merchant.is_deleted:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"{store.name} isn't taking orders right now")
 
         raw_items = payload.get("items") or []
         ids = set()

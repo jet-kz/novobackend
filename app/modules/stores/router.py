@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from app.core.database import get_db
 from app.core.access import assert_store_access, get_owned_merchant, is_admin, to_uuid
-from app.core.security import get_current_user, require_role
+from app.core.security import get_current_user, get_optional_user, require_role
 from app.modules.stores.service import StoreService
 
 router = APIRouter()
@@ -36,10 +36,13 @@ def serialize_store(s) -> dict:
 async def list_stores(
     store_type: Optional[str] = Query(None, description="Filter by type: restaurant, pharmacy, grocery"),
     is_open: Optional[bool] = Query(None, description="Filter by open status"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    user: Optional[dict] = Depends(get_optional_user),
 ):
-    """List all active stores. Optional filters by type and open status."""
-    stores = await StoreService.get_all_stores(db, store_type=store_type, is_open=is_open)
+    """Approved stores of active merchants (admins see every store). Optional filters by type and open status."""
+    from app.core.access import is_admin
+
+    stores = await StoreService.get_all_stores(db, store_type=store_type, is_open=is_open, public=not is_admin(user))
     return {"success": True, "message": "Stores retrieved successfully", "data": [serialize_store(s) for s in stores]}
 
 
@@ -90,6 +93,10 @@ async def verify_store(store_id: str = Path(...), payload: Optional[dict] = Body
     store = await assert_store_access(db, store_id, current_user)
     verified = (payload or {}).get("is_verified", True)
     store = await StoreService.set_verified(db, store, bool(verified))
+    from app.core.audit import record
+
+    record(db, current_user, "store.approve" if store.is_verified else "store.unapprove", "store", store.id, {"name": store.name})
+    await db.commit()
     return {"success": True, "message": "Store approved" if store.is_verified else "Store approval revoked", "data": serialize_store(store)}
 
 

@@ -28,6 +28,7 @@ from app.modules.pricing.router import router as pricing_router
 from app.modules.catalog.router import router as catalog_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.payouts.router import router as payouts_router
+from app.modules.admin.router import router as admin_router
 
 setup_logging()
 
@@ -121,6 +122,7 @@ app.include_router(analytics_router,  prefix="/api/v1/analytics",   tags=["Analy
 app.include_router(catalog_router,    prefix="/api/v1/catalog",     tags=["Homepage Catalog"])
 app.include_router(notifications_router, prefix="/api/v1/notifications", tags=["Notifications"])
 app.include_router(payouts_router,    prefix="/api/v1/payouts",     tags=["Merchant & Rider Payouts"])
+app.include_router(admin_router,      prefix="/api/v1/admin",       tags=["Admin Console"])
 
 
 @app.get("/", tags=["Health"])

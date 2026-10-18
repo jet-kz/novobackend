@@ -141,4 +141,9 @@ async def settle(payload: dict = Body(...), db: AsyncSession = Depends(get_db), 
         db, str(payload.get("payee_type") or ""), str(payload.get("payee_id") or ""),
         payload.get("amount"), payload.get("note"), current_user["user_id"],
     )
+    from app.core.audit import record
+
+    record(db, current_user, "settlement.send", settlement.payee_type, settlement.payee_id,
+           {"amount": settlement.amount, "status": settlement.status, "transfer": settlement.bachs_transfer_id})
+    await db.commit()
     return {"success": True, "message": "Settlement sent", "data": model_to_dict(settlement)}

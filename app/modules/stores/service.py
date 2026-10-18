@@ -9,8 +9,15 @@ from app.modules.notifications import service as notify
 
 class StoreService:
     @staticmethod
-    async def get_all_stores(db: AsyncSession, store_type: Optional[str] = None, is_open: Optional[bool] = None):
+    async def get_all_stores(db: AsyncSession, store_type: Optional[str] = None, is_open: Optional[bool] = None, public: bool = True):
         stmt = select(Store).where(Store.is_deleted == False)
+        if public:
+            # Customers only see approved stores whose merchant is active.
+            from app.modules.merchants.models import Merchant
+
+            stmt = stmt.join(Merchant, Merchant.id == Store.merchant_id).where(
+                Store.is_verified == True, Merchant.status == "active", Merchant.is_deleted == False
+            )
         if store_type:
             stmt = stmt.where(Store.store_type == store_type)
         if is_open is not None:

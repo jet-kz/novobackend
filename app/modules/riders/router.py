@@ -106,6 +106,10 @@ async def broadcast_to_riders(payload: dict = Body(...), db: AsyncSession = Depe
         approval_status=None if audience == "all" else ("approved" if audience == "online" else audience),
     )
     sent = await RiderService.message(db, [r.id for r in riders], payload.get("title"), payload.get("body"), current_user["user_id"])
+    from app.core.audit import record
+
+    record(db, current_user, "rider.broadcast", "riders", audience, {"title": payload.get("title"), "sent": sent})
+    await db.commit()
     return {"success": True, "message": f"Message sent to {sent} rider(s)", "data": {"sent": sent}}
 
 
@@ -114,6 +118,10 @@ async def message_rider(rider_id: str = Path(...), payload: dict = Body(...), db
     """Admin: send one rider a message (in-app + email)."""
     await RiderService.get_by_id(db, rider_id)
     await RiderService.message(db, [rider_id], payload.get("title"), payload.get("body"), current_user["user_id"])
+    from app.core.audit import record
+
+    record(db, current_user, "rider.message", "rider", rider_id, {"title": payload.get("title")})
+    await db.commit()
     return {"success": True, "message": "Message sent", "data": None}
 
 
@@ -121,6 +129,10 @@ async def message_rider(rider_id: str = Path(...), payload: dict = Body(...), db
 async def review_rider(rider_id: str = Path(...), payload: dict = Body(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
     """Admin: approve or reject a rider's onboarding. Body: {decision: approve|reject, note?}."""
     rider = await RiderService.review(db, rider_id, str(payload.get("decision") or ""), payload.get("note"), current_user["user_id"])
+    from app.core.audit import record
+
+    record(db, current_user, f"rider.{rider.approval_status}", "rider", rider_id, {"note": payload.get("note")} if payload.get("note") else None)
+    await db.commit()
     return {"success": True, "message": f"Rider {rider.approval_status}", "data": _serialize(rider)}
 
 
@@ -151,4 +163,8 @@ async def create_rider_profile(payload: dict = Body(...), db: AsyncSession = Dep
 async def deactivate_rider(rider_id: str = Path(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
     """Admin: Soft-deactivate a rider account."""
     await RiderService.deactivate(db, rider_id)
+    from app.core.audit import record
+
+    record(db, current_user, "rider.deactivate", "rider", rider_id)
+    await db.commit()
     return {"success": True, "message": "Rider deactivated", "data": None}
