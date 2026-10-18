@@ -80,10 +80,13 @@ class DeliveryService:
 
     @staticmethod
     async def update_rider_location(db: AsyncSession, rider_id: str, data: dict):
-        lon = data.get("longitude")
-        lat = data.get("latitude")
-        if not lon or not lat:
+        try:
+            lon = float(data.get("longitude"))
+            lat = float(data.get("latitude"))
+        except (TypeError, ValueError):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="longitude and latitude required")
+        if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Coordinates out of range")
 
         wkt = f"SRID=4326;POINT({lon} {lat})"
 

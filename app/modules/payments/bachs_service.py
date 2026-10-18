@@ -81,20 +81,35 @@ class BachsService:
             "cancel_url": cancel_url,
             "expires_in_minutes": 60,
         }
-        if customer:
+        # Bachs needs an email (or customer_id) on any customer record; without one, leave it out
+        # and Bachs collects the email on its checkout page.
+        if customer.get("email"):
             payload["customer"] = customer
 
-        try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                res = await client.post(f"{_api_url()}/v1/checkout-sessions", json=payload, headers=BachsService._headers())
-        except httpx.RequestError as exc:
-            logger.warning("Bachs unreachable creating checkout for %s: %s", order_id, exc)
+        headers = {**BachsService._headers(), "Idempotency-Key": f"novo-checkout-{reference}"}
+        res = None
+        for attempt in range(2):  # one retry on a network blip; the idempotency key makes it safe
+            try:
+                async with httpx.AsyncClient(timeout=25) as client:
+                    res = await client.post(f"{_api_url()}/v1/checkout-sessions", json=payload, headers=headers)
+                break
+            except httpx.RequestError as exc:
+                logger.warning("Bachs unreachable creating checkout for %s (attempt %s): %s", order_id, attempt + 1, exc)
+        if res is None:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
-                                detail="Couldn't reach the payment provider. Please try again.")
+                                detail="Couldn't reach Bachs, our payment provider. Check your connection and try again.")
         if res.status_code not in (200, 201):
             logger.error("Bachs checkout failed for %s: %s %s", order_id, res.status_code, res.text[:500])
+            try:
+                reason = res.json().get("detail") or res.json().get("message")
+            except ValueError:
+                reason = None
+            if res.status_code in (401, 403):
+                # Our configuration problem, not the customer's — say so plainly.
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                    detail=f"Online payment is temporarily unavailable ({reason or 'Bachs rejected our API key'}). Choose cash or transfer on delivery.")
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
-                                detail="The payment provider couldn't start checkout. Please try again.")
+                                detail=f"Bachs couldn't start the payment: {reason or 'unknown error'}. Please try again.")
         data = res.json()
         data = data.get("data", data) if isinstance(data, dict) else {}
         if not data.get("checkout_url"):

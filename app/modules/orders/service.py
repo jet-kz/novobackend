@@ -54,6 +54,20 @@ def hash_guest_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+# Stores created before merchants could pin them on a map were saved at this Lagos point.
+PLACEHOLDER_STORE_POINT = (6.5244, 3.3792)
+
+
+def real_store_location(store) -> Optional[dict]:
+    """The store's pinned {latitude, longitude}, or None if it's missing or the old placeholder."""
+    loc = store.location if store is not None and isinstance(store.location, dict) else None
+    if not loc or loc.get("latitude") is None or loc.get("longitude") is None:
+        return None
+    if abs(loc["latitude"] - PLACEHOLDER_STORE_POINT[0]) < 1e-4 and abs(loc["longitude"] - PLACEHOLDER_STORE_POINT[1]) < 1e-4:
+        return None
+    return loc
+
+
 def pickup_code_for(order_id: str) -> str:
     """Stable 4-digit code the merchant reads to the rider at pickup. Derived, so no column is needed."""
     salt = config.SUPABASE_JWT_SECRET or "novo-pickup"
@@ -159,6 +173,7 @@ def serialize_order(
     store: Optional[Store] = None,
     delivery: Optional[Delivery] = None,
     include_pickup_code: bool = False,
+    rider_info: Optional[dict] = None,
 ) -> dict:
     data = model_to_dict(order)
     data.pop("guest_token_hash", None)
@@ -170,11 +185,20 @@ def serialize_order(
         data["store_name"] = store.name
         data["store_address"] = store.address
         data["store_phone"] = store.phone
+        loc = real_store_location(store)
+        data["store_location"] = {"latitude": loc["latitude"], "longitude": loc["longitude"]} if loc else None
+    data["dropoff_location"] = {"latitude": order.delivery_latitude, "longitude": order.delivery_longitude}
     if delivery is not None and delivery.rider_id:
         data["rider_id"] = delivery.rider_id
         data["delivery_id"] = str(delivery.id)
         data["delivery_status"] = delivery.status
         data["rider_earnings"] = delivery.rider_earnings
+        if rider_info:
+            data["rider_name"] = rider_info.get("name")
+            data["rider_phone"] = rider_info.get("phone")
+            # Live position only while the rider is on the job.
+            if delivery.status in ("assigned", "picked_up"):
+                data["rider_location"] = rider_info.get("location")
     if include_pickup_code:
         data["pickup_code"] = pickup_code_for(order.id)
     return data
@@ -198,10 +222,40 @@ class OrderService:
         deliveries = {}
         for d in res.scalars().all():
             deliveries[d.order_id] = d
+        riders = await OrderService._rider_info(db, {d.rider_id for d in deliveries.values() if d.rider_id})
         return [
-            serialize_order(o, stores.get(o.store_id), deliveries.get(o.id), include_pickup_code)
+            serialize_order(
+                o, stores.get(o.store_id), deliveries.get(o.id), include_pickup_code,
+                riders.get(deliveries[o.id].rider_id) if o.id in deliveries else None,
+            )
             for o in orders
         ]
+
+    @staticmethod
+    async def _rider_info(db: AsyncSession, rider_ids: set) -> dict:
+        """Name, phone and last GPS fix for riders (for customer tracking)."""
+        if not rider_ids:
+            return {}
+        from app.modules.riders.models import RiderProfile
+        from app.modules.users.models import UserProfile
+
+        riders = (await db.execute(select(RiderProfile).where(RiderProfile.id.in_(rider_ids)))).scalars().all()
+        profiles = {
+            p.user_id: p for p in (await db.execute(select(UserProfile).where(UserProfile.user_id.in_(rider_ids)))).scalars().all()
+        }
+        info = {}
+        for r in riders:
+            loc = r.last_location if isinstance(r.last_location, dict) else None
+            profile = profiles.get(r.id)
+            info[r.id] = {
+                "name": profile.full_name if profile else None,
+                "phone": profile.phone if profile else None,
+                "location": {
+                    "latitude": loc["latitude"], "longitude": loc["longitude"],
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                } if loc else None,
+            }
+        return info
 
     @staticmethod
     async def get_all_orders(
@@ -397,8 +451,8 @@ class OrderService:
         lat = _coord(payload.get("delivery_latitude"), DEFAULT_DELIVERY_COORDS[0], -90, 90)
         lon = _coord(payload.get("delivery_longitude"), DEFAULT_DELIVERY_COORDS[1], -180, 180)
         distance_km = 3.0
-        loc = store.location if isinstance(store.location, dict) else None
-        if loc and loc.get("latitude") is not None and payload.get("delivery_latitude") is not None:
+        loc = real_store_location(store)
+        if loc and payload.get("delivery_latitude") is not None:
             distance_km = round(min(haversine_km(loc["latitude"], loc["longitude"], lat, lon), 50.0), 2)
 
         promo_code = payload.get("promo_code") or payload.get("promoCode")
@@ -537,6 +591,8 @@ class OrderService:
     async def create_guest_order(db: AsyncSession, data: dict) -> dict:
         """Checkout without an account. Returns the order plus a secret token for the tracking link."""
         name, phone, email = OrderService._validate_guest_contact(data or {})
+        if str((data or {}).get("payment_method") or "card").lower() == "card" and not email:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Add your email to pay online. Your receipt goes there.")
         payload = {k: v for k, v in (data or {}).items() if k not in ("promo_code", "promoCode")}
         payload.update(customer_name=name, customer_phone=phone, customer_email=email)
         token = secrets.token_urlsafe(24)

@@ -51,3 +51,8 @@ SMTP_SECURITY: str = os.getenv("SMTP_SECURITY", "starttls").strip().lower()
 BACHS_SECRET_KEY: str = os.getenv("BACHS_SECRET_KEY", "").strip()
 BACHS_WEBHOOK_SECRET: str = os.getenv("BACHS_WEBHOOK_SECRET", "").strip()
 BACHS_API_URL: str = os.getenv("BACHS_API_URL", "").strip()
+
+# Web push (browser/phone notifications). Generate once; the public key is given to browsers.
+VAPID_PUBLIC_KEY: str = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+VAPID_PRIVATE_KEY: str = os.getenv("VAPID_PRIVATE_KEY", "").strip()
+VAPID_SUBJECT: str = os.getenv("VAPID_SUBJECT", "mailto:info@novong.com").strip()

@@ -5,14 +5,14 @@ tables directly (orders, wallets, user_roles, ...). No policies are added, so th
 closed entirely. The backend connects as `postgres` (BYPASSRLS) and is unaffected.
 
 Revision ID: 006_enable_rls_all_tables
-Revises: 008_pricing_ledger_payouts
+Revises: 009_push_subscriptions
 """
 from typing import Sequence, Union
 
 from alembic import op
 
 revision: str = "006_enable_rls_all_tables"
-down_revision: Union[str, None] = "008_pricing_ledger_payouts"
+down_revision: Union[str, None] = "009_push_subscriptions"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

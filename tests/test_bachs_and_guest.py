@@ -138,3 +138,39 @@ class GuestCheckoutTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CheckoutPayloadTests(unittest.IsolatedAsyncioTestCase):
+    async def _payload(self, email):
+        from unittest.mock import AsyncMock, MagicMock
+        from app.modules.payments import bachs_service
+
+        res = MagicMock(status_code=201)
+        res.json.return_value = {"checkout_id": "chk_1", "checkout_url": "https://sandbox-checkout.bachs.io/c/x"}
+        client = MagicMock()
+        client.post = AsyncMock(return_value=res)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        with patch.object(config, "BACHS_SECRET_KEY", "sk_sandbox_test"), \
+             patch.object(bachs_service.httpx, "AsyncClient", return_value=client):
+            await bachs_service.BachsService.create_checkout_session(
+                order_id="ORD-1", amount=100, currency="NGN", reference="ORD-1-a", customer_email=email,
+                customer_name="Ada", customer_phone="0800", success_url="https://x/s", cancel_url="https://x/c",
+            )
+        return client.post.call_args.kwargs["json"]
+
+    async def test_guest_without_email_sends_no_customer(self):
+        # Bachs rejects a customer object without email/customer_id.
+        self.assertNotIn("customer", await self._payload(None))
+
+    async def test_customer_with_email_included(self):
+        payload = await self._payload("ada@example.com")
+        self.assertEqual(payload["customer"]["email"], "ada@example.com")
+        self.assertEqual(payload["pricing"], {"currency": "NGN", "amount": "100.00"})
+
+
+class GuestCardEmailTests(unittest.IsolatedAsyncioTestCase):
+    async def test_card_needs_email(self):
+        with self.assertRaises(HTTPException) as ctx:
+            await OrderService.create_guest_order(None, {"customer_name": "Ada", "customer_phone": "08031234567", "payment_method": "card"})
+        self.assertIn("email", ctx.exception.detail)
