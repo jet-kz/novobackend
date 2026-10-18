@@ -11,6 +11,10 @@ class Order(Base):
     customer_id = Column(String(255), nullable=False, index=True)
     customer_name = Column(String(120), nullable=False)
     customer_phone = Column(String(50), nullable=True)
+    # Receipts/updates for guest checkouts (signed-in customers use their account email).
+    customer_email = Column(String(255), nullable=True)
+    # Guest orders: customer_id is "guest:<uuid>" and this hashes the secret in their tracking link.
+    guest_token_hash = Column(String(64), nullable=True)
     store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True)
     address_id = Column(UUID(as_uuid=True), ForeignKey("addresses.id", ondelete="SET NULL"), nullable=True, index=True)
     subtotal = Column(Float, nullable=False)

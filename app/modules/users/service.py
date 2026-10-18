@@ -46,6 +46,11 @@ class UserProfileService:
         return profile
 
     @staticmethod
+    async def list_profiles(db: AsyncSession):
+        result = await db.execute(select(UserProfile).order_by(UserProfile.created_at.desc()))
+        return result.scalars().all()
+
+    @staticmethod
     async def deactivate(db: AsyncSession, user_id: str):
         result = await db.execute(select(UserProfile).where(UserProfile.user_id == user_id))
         profile = result.scalar_one_or_none()

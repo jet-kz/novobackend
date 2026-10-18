@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, status, Path, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_role
 from app.modules.wallets.service import WalletService
 
 router = APIRouter()
@@ -29,9 +29,10 @@ async def get_transactions(currency: str = Path(...), db: AsyncSession = Depends
 
 
 @router.post("/credit", status_code=status.HTTP_200_OK)
-async def credit_wallet(payload: dict = Body(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    """Credit funds to a user wallet (e.g., top-up, refund credit)."""
-    wallet = await WalletService.credit(db, current_user["user_id"], payload)
+async def credit_wallet(payload: dict = Body(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
+    """Admin: credit a user's wallet (refund credit, manual adjustment). Pass holder_id; defaults to the caller."""
+    holder_id = str(payload.get("holder_id") or current_user["user_id"])
+    wallet = await WalletService.credit(db, holder_id, payload)
     return {"success": True, "message": "Wallet credited successfully", "data": wallet}
 
 

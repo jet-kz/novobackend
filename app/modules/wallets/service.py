@@ -4,6 +4,16 @@ from fastapi import HTTPException, status
 from app.modules.wallets.models import Wallet, WalletTransaction
 
 
+def _positive_amount(data: dict) -> float:
+    try:
+        amount = round(float((data or {}).get("amount", 0)), 2)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Amount must be a number")
+    if amount <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Amount must be greater than zero")
+    return amount
+
+
 class WalletService:
     @staticmethod
     async def get_wallets(db: AsyncSession, holder_id: str):
@@ -43,12 +53,11 @@ class WalletService:
             .order_by(WalletTransaction.created_at.desc())
         )
         return result.scalars().all()
-        return result.scalars().all()
 
     @staticmethod
     async def credit(db: AsyncSession, holder_id: str, data: dict):
-        currency = data.get("currency", "NGN")
-        amount = float(data.get("amount", 0))
+        currency = str(data.get("currency") or "NGN").upper()
+        amount = _positive_amount(data)
         wallet = await WalletService._get_or_create_wallet(db, holder_id, currency)
         wallet.balance += amount
         txn = WalletTransaction(
@@ -65,9 +74,14 @@ class WalletService:
 
     @staticmethod
     async def debit(db: AsyncSession, holder_id: str, data: dict):
-        currency = data.get("currency", "NGN")
-        amount = float(data.get("amount", 0))
-        wallet = await WalletService._get_or_create_wallet(db, holder_id, currency)
+        currency = str(data.get("currency") or "NGN").upper()
+        amount = _positive_amount(data)
+        await WalletService._get_or_create_wallet(db, holder_id, currency)
+        # Lock the row so two concurrent payouts cannot both pass the balance check.
+        locked = await db.execute(
+            select(Wallet).where(Wallet.holder_id == holder_id, Wallet.currency == currency).with_for_update()
+        )
+        wallet = locked.scalar_one()
         if wallet.balance < amount:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Insufficient wallet balance")
         wallet.balance -= amount

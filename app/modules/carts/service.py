@@ -3,7 +3,14 @@ from sqlalchemy.future import select
 from fastapi import HTTPException, status
 from app.modules.carts.models import Cart, CartItem
 from app.modules.products.models import Product
+from app.core.serializers import model_to_dict
 import uuid
+
+def serialize_cart(cart, items) -> dict:
+    return {
+        "cart": model_to_dict(cart) if cart else None,
+        "items": [model_to_dict(item) for item in (items or [])],
+    }
 
 class CartService:
     @staticmethod
@@ -13,13 +20,17 @@ class CartService:
         if not cart:
             return None
         items_result = await db.execute(select(CartItem).where(CartItem.cart_id == cart.id))
-        return {"cart": cart, "items": items_result.scalars().all()}
+        return serialize_cart(cart, items_result.scalars().all())
 
     @staticmethod
     async def add_item(db: AsyncSession, customer_id: str, data: dict):
-        product_id = data.get("product_id")
+        product_id = data.get("product_id") or data.get("productId")
         quantity = data.get("quantity", 1)
-        addons = data.get("addons")
+        addons = data.get("addons") or data.get("selectedOptions")
+        try:
+            product_id = uuid.UUID(str(product_id))
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid product_id")
 
         # Look up the product to enforce store lock
         prod_result = await db.execute(select(Product).where(Product.id == product_id, Product.is_deleted == False))

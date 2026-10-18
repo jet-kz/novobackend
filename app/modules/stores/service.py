@@ -4,6 +4,7 @@ from sqlalchemy.future import select
 from fastapi import HTTPException, status
 from app.modules.stores.models import Store
 from typing import Optional
+from app.modules.notifications import service as notify
 
 
 class StoreService:
@@ -19,30 +20,34 @@ class StoreService:
 
     @staticmethod
     async def get_by_id(db: AsyncSession, store_id: str):
-        result = await db.execute(select(Store).where(Store.id == store_id, Store.is_deleted == False))
+        try:
+            sid = uuid.UUID(str(store_id))
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+        result = await db.execute(select(Store).where(Store.id == sid, Store.is_deleted == False))
         store = result.scalar_one_or_none()
         if not store:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
         return store
 
     @staticmethod
-    async def create_store(db: AsyncSession, data: dict):
-        if "merchantId" in data and "merchant_id" not in data:
-            data["merchant_id"] = data.pop("merchantId")
+    async def create_store(db: AsyncSession, data: dict, merchant_id):
+        data = dict(data or {})
+        data.pop("merchantId", None)
+        for protected in ("id", "is_verified", "isVerified", "is_deleted", "status"):
+            data.pop(protected, None)
+        data["merchant_id"] = merchant_id
+        if not str(data.get("name") or "").strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Store name is required")
         if "category" in data and "store_type" not in data:
             data["store_type"] = data.pop("category")
         if "store_type" not in data:
             data["store_type"] = "restaurant"
 
-        if "merchant_id" in data and isinstance(data["merchant_id"], str):
-            try:
-                data["merchant_id"] = uuid.UUID(data["merchant_id"])
-            except Exception:
-                pass
-
-        # Strip unmapped frontend helper properties
-        data.pop("deliveryFee", None)
-        data.pop("minOrder", None)
+        settings = dict(data.pop("settings", None) or {})
+        for camel, snake in {"deliveryFee": "delivery_fee", "minOrder": "min_order", "deliveryTime": "delivery_time"}.items():
+            if camel in data:
+                settings[snake] = data.pop(camel)
 
         if "slug" not in data and "name" in data:
             import re
@@ -55,6 +60,13 @@ class StoreService:
         else:
             data["location"] = "SRID=4326;POINT(3.3792 6.5244)"
 
+        columns = set(Store.__table__.columns.keys())
+        for k in list(data.keys()):
+            if k not in columns:
+                value = data.pop(k)
+                if isinstance(k, str) and len(k) <= 50:
+                    settings[k] = value
+        data["settings"] = settings or None
         store = Store(**data)
         db.add(store)
         await db.commit()
@@ -62,75 +74,70 @@ class StoreService:
         return store
 
     @staticmethod
-    async def update_store(db: AsyncSession, store_id: str, data: dict):
-        try:
-            target_uuid = uuid.UUID(store_id) if isinstance(store_id, str) else store_id
-        except Exception:
-            target_uuid = store_id
-
-        result = await db.execute(select(Store).where((Store.id == target_uuid) | (Store.id == store_id), Store.is_deleted == False))
-        store = result.scalar_one_or_none()
-        if not store:
-            # Fallback: get first non-deleted store if ID lookup fails
-            res_all = await db.execute(select(Store).where(Store.is_deleted == False))
-            store = res_all.scalars().first()
-            if not store:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+    async def update_store(db: AsyncSession, store: Store, data: dict):
+        """Apply an owner/admin edit. Protected fields (owner, verification, deletion) are ignored here."""
+        data = dict(data or {})
+        for protected in ("id", "merchant_id", "merchantId", "is_verified", "isVerified", "is_deleted", "slug", "created_at", "status"):
+            data.pop(protected, None)
 
         loc = data.pop("location", None)
         if loc and isinstance(loc, dict):
-            data["location"] = f"SRID=4326;POINT({loc.get('longitude', 3.3792)} {loc.get('latitude', 6.5244)})"
+            try:
+                data["location"] = f"SRID=4326;POINT({float(loc['longitude'])} {float(loc['latitude'])})"
+            except (KeyError, TypeError, ValueError):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="location needs numeric longitude and latitude")
 
         if "category" in data and "store_type" not in data:
             data["store_type"] = data.pop("category")
+        if "isOpening" in data and "is_open" not in data:
+            data["is_open"] = bool(data.pop("isOpening"))
 
-        # Extract extra settings if provided
         custom_settings = data.pop("settings", {}) or {}
+        camel_settings = {"deliveryFee": "delivery_fee", "minOrder": "min_order", "deliveryTime": "delivery_time"}
+        for camel, snake in camel_settings.items():
+            if camel in data:
+                custom_settings[snake] = data.pop(camel)
 
         valid_columns = Store.__table__.columns.keys()
         for k, v in list(data.items()):
             if k in valid_columns:
                 setattr(store, k, v)
-            else:
+            elif isinstance(k, str) and len(k) <= 50:
                 custom_settings[k] = v
 
         if custom_settings:
-            existing_settings = store.settings or {}
-            if isinstance(existing_settings, dict):
-                existing_settings.update(custom_settings)
-                store.settings = existing_settings
+            merged = dict(store.settings or {}) if isinstance(store.settings, dict) else {}
+            merged.update(custom_settings)
+            store.settings = merged
 
-        # Also sync linked merchant name if store name changed
-        if store.merchant_id and "name" in data:
-            try:
-                from app.modules.merchants.models import Merchant
-                merch_res = await db.execute(select(Merchant).where(Merchant.id == store.merchant_id))
-                merch = merch_res.scalar_one_or_none()
-                if merch:
-                    merch.name = store.name
-            except Exception:
-                pass
+        if "name" in data and store.merchant_id:
+            from app.modules.merchants.models import Merchant
+            merch = await db.get(Merchant, store.merchant_id)
+            if merch:
+                merch.name = store.name
 
         await db.commit()
         await db.refresh(store)
         return store
 
     @staticmethod
-    async def toggle_open(db: AsyncSession, store_id: str):
-        result = await db.execute(select(Store).where(Store.id == store_id, Store.is_deleted == False))
-        store = result.scalar_one_or_none()
-        if not store:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+    async def toggle_open(db: AsyncSession, store: Store):
         store.is_open = not store.is_open
         await db.commit()
         await db.refresh(store)
         return store
 
     @staticmethod
-    async def delete_store(db: AsyncSession, store_id: str):
-        result = await db.execute(select(Store).where(Store.id == store_id))
-        store = result.scalar_one_or_none()
-        if not store:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+    async def delete_store(db: AsyncSession, store: Store):
         store.is_deleted = True
         await db.commit()
+
+    @staticmethod
+    async def set_verified(db: AsyncSession, store: Store, verified: bool):
+        changed = bool(store.is_verified) != bool(verified)
+        store.is_verified = bool(verified)
+        await db.commit()
+        await db.refresh(store)
+        if changed:
+            notify.store_verification_changed(store.id, bool(verified))
+        return store

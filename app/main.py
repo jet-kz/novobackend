@@ -1,6 +1,13 @@
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.core import config
+from app.core.database import engine
 from app.core.logging import setup_logging
+from app.core.mailer import mail_enabled
 
 from app.modules.auth.router import router as auth_router
 from app.modules.users.router import router as users_router
@@ -18,13 +25,42 @@ from app.modules.inventory.router import router as inventory_router
 from app.modules.analytics.router import router as analytics_router
 from app.modules.uploads.router import router as uploads_router
 from app.modules.pricing.router import router as pricing_router
+from app.modules.catalog.router import router as catalog_router
+from app.modules.notifications.router import router as notifications_router
+from app.modules.payouts.router import router as payouts_router
 
 setup_logging()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    from app.modules.auth.models import EmailCode
+
+    # Same table as alembic revision 004; created here too so auth works before migrations run.
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda sync_conn: EmailCode.__table__.create(sync_conn, checkfirst=True))
+    except Exception:
+        logging.getLogger("novo").exception("Could not ensure email_codes table")
+    try:
+        from app.modules.uploads.router import ensure_buckets
+
+        await asyncio.to_thread(ensure_buckets)
+    except Exception:
+        logging.getLogger("novo").exception("Could not ensure storage buckets")
+    if not mail_enabled():
+        logging.getLogger("novo").warning(
+            "No email provider configured (RESEND_API_KEY or SMTP_*); auth codes fall back to Supabase's mailer "
+            "and notification emails are skipped."
+        )
+    yield
+
 
 app = FastAPI(
     title="Novo Marketplace Backend",
     version="1.0.0",
-    description="Production-ready modular monolith for a multi-sided marketplace"
+    description="Production-ready modular monolith for a multi-sided marketplace",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -38,6 +74,9 @@ app.add_middleware(
         "http://127.0.0.1:3001",
         "https://novobackend.onrender.com",
         "https://novo-flame.vercel.app",
+        "https://www.novong.com",
+        "https://novong.com",
+        config.FRONTEND_URL,
     ],
     allow_origin_regex=r"https?://.*",
     allow_credentials=True,
@@ -79,6 +118,9 @@ app.include_router(addresses_router,  prefix="/api/v1/addresses",   tags=["Addre
 app.include_router(wallets_router,    prefix="/api/v1/wallets",     tags=["Wallets"])
 app.include_router(inventory_router,  prefix="/api/v1/inventory",   tags=["Inventory"])
 app.include_router(analytics_router,  prefix="/api/v1/analytics",   tags=["Analytics"])
+app.include_router(catalog_router,    prefix="/api/v1/catalog",     tags=["Homepage Catalog"])
+app.include_router(notifications_router, prefix="/api/v1/notifications", tags=["Notifications"])
+app.include_router(payouts_router,    prefix="/api/v1/payouts",     tags=["Merchant & Rider Payouts"])
 
 
 @app.get("/", tags=["Health"])

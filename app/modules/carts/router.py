@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, status, Path, Body
+from fastapi import APIRouter, Depends, status, Path, Body, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.modules.carts.service import CartService
@@ -15,9 +16,20 @@ async def get_cart(db: AsyncSession = Depends(get_db), current_user: dict = Depe
 
 
 @router.post("/items", status_code=status.HTTP_200_OK)
-async def add_item(payload: dict = Body(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
+async def add_item(
+    payload: Optional[dict] = Body(default=None),
+    product_id: Optional[str] = Query(None),
+    quantity: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
     """Add a product to the cart. Cart is locked to one store — mixing stores is rejected."""
-    cart = await CartService.add_item(db, current_user["user_id"], payload)
+    body = dict(payload or {})
+    if product_id and not body.get("product_id"):
+        body["product_id"] = product_id
+    if quantity is not None and body.get("quantity") is None:
+        body["quantity"] = quantity
+    cart = await CartService.add_item(db, current_user["user_id"], body)
     return {"success": True, "message": "Item added to cart", "data": cart}
 
 

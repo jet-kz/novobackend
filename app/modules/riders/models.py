@@ -11,6 +11,11 @@ class RiderProfile(Base):
     rating = Column(Float, default=0.0)
     total_deliveries = Column(Integer, default=0)
     is_deleted = Column(Boolean, default=False, index=True)
+    # Onboarding review: 'pending' | 'approved' | 'rejected'. Only approved riders can go online.
+    approval_status = Column(String(20), nullable=False, default="pending", server_default="pending", index=True)
+    approval_note = Column(String(500), nullable=True)
+    id_document_url = Column(String(500), nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
     last_location = Column(Geography("Point"), nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

@@ -16,8 +16,8 @@ async def get_my_merchant(db: AsyncSession = Depends(get_db), current_user: dict
 
 
 @router.get("", status_code=status.HTTP_200_OK)
-async def list_merchants(db: AsyncSession = Depends(get_db)):
-    """List all active merchants on the platform."""
+async def list_merchants(db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
+    """Admin: list all active merchants on the platform."""
     merchants = await MerchantService.get_all(db)
     return {"success": True, "message": "Merchants retrieved", "data": merchants}
 
@@ -46,8 +46,11 @@ async def update_merchant(merchant_id: str = Path(...), payload: dict = Body(...
 @router.patch("/{merchant_id}/status", status_code=status.HTTP_200_OK)
 async def toggle_merchant_status(merchant_id: str = Path(...), payload: dict = Body(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
     """Admin only: Activate or suspend a merchant account."""
-    merchant = await MerchantService.set_status(db, merchant_id, payload.get("status"))
-    return {"success": True, "message": f"Merchant status set to {payload.get('status')}", "data": merchant}
+    new_status = payload.get("status")
+    if new_status is None and "is_active" in payload:
+        new_status = "active" if payload.get("is_active") else "suspended"
+    merchant = await MerchantService.set_status(db, merchant_id, new_status)
+    return {"success": True, "message": f"Merchant status set to {new_status}", "data": merchant}
 
 
 @router.get("/{merchant_id}/stores", status_code=status.HTTP_200_OK)

@@ -61,17 +61,3 @@ class LedgerEntry(Base):
     reference = Column(String, nullable=True)
     description = Column(String, nullable=True)
     created_at = Column(DateTime, default=func.now())
-
-
-class Settlement(Base):
-    __tablename__ = "settlements"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    merchant_id = Column(String, nullable=False, index=True)
-    amount = Column(Float, nullable=False)
-    status = Column(String, nullable=False, default="PENDING") # PENDING, PROCESSING, SUCCESS, FAILED
-    paystack_reference = Column(String, nullable=True)
-    period_start = Column(DateTime, nullable=True)
-    period_end = Column(DateTime, nullable=True)
-    settled_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=func.now())

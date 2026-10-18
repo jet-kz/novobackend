@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.database import get_db
+from app.core.security import require_role
 from app.modules.pricing.schemas import (
     PricingCalculateRequest,
     PricingBreakdownResponse,
@@ -76,7 +77,7 @@ async def validate_promo_code(
 # --- ADMIN CONFIGURATION ENDPOINTS ---
 
 @router.get("/rules/commission")
-async def get_commission_rules(db: AsyncSession = Depends(get_db)):
+async def get_commission_rules(db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
     res = await db.execute(select(CommissionRule))
     return res.scalars().all()
 
@@ -84,7 +85,8 @@ async def get_commission_rules(db: AsyncSession = Depends(get_db)):
 @router.post("/rules/commission")
 async def save_commission_rule(
     schema: CommissionRuleSchema,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role("admin")),
 ):
     if schema.id:
         res = await db.execute(select(CommissionRule).where(CommissionRule.id == schema.id))
@@ -114,7 +116,7 @@ async def save_commission_rule(
 
 
 @router.get("/rules/delivery")
-async def get_delivery_rules(db: AsyncSession = Depends(get_db)):
+async def get_delivery_rules(db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
     res = await db.execute(select(DeliveryPricingRule))
     return res.scalars().all()
 
@@ -122,7 +124,8 @@ async def get_delivery_rules(db: AsyncSession = Depends(get_db)):
 @router.post("/rules/delivery")
 async def save_delivery_rule(
     schema: DeliveryPricingRuleSchema,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role("admin")),
 ):
     if schema.id:
         res = await db.execute(select(DeliveryPricingRule).where(DeliveryPricingRule.id == schema.id))
@@ -152,7 +155,7 @@ async def save_delivery_rule(
 
 
 @router.get("/rules/service-fee")
-async def get_service_fee_rules(db: AsyncSession = Depends(get_db)):
+async def get_service_fee_rules(db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
     res = await db.execute(select(ServiceFeeRule))
     return res.scalars().all()
 
@@ -160,7 +163,8 @@ async def get_service_fee_rules(db: AsyncSession = Depends(get_db)):
 @router.post("/rules/service-fee")
 async def save_service_fee_rule(
     schema: ServiceFeeRuleSchema,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role("admin")),
 ):
     rule = ServiceFeeRule(
         name=schema.name,
@@ -176,7 +180,7 @@ async def save_service_fee_rule(
 
 
 @router.get("/promotions")
-async def get_promotions(db: AsyncSession = Depends(get_db)):
+async def get_promotions(db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
     res = await db.execute(select(PromotionCampaign))
     return res.scalars().all()
 
@@ -184,7 +188,8 @@ async def get_promotions(db: AsyncSession = Depends(get_db)):
 @router.post("/promotions")
 async def create_promotion(
     schema: CreatePromotionCampaignSchema,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role("admin")),
 ):
     campaign = PromotionCampaign(
         code=schema.code.upper().strip(),

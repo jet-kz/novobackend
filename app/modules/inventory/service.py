@@ -53,7 +53,7 @@ class InventoryService:
         return [i for i in all_items if i.quantity <= i.low_stock_threshold]
 
     @staticmethod
-    async def import_from_csv(db: AsyncSession, csv_contents: str) -> dict:
+    async def import_from_csv(db: AsyncSession, csv_contents: str, allowed_store_ids=None) -> dict:
         """
         Parses a CSV file containing inventory levels and product images.
         Expected columns:
@@ -122,6 +122,9 @@ class InventoryService:
             product = prod_result.scalar_one_or_none()
             if not product:
                 errors.append(f"Row {index}: Product with ID {p_id_str} not found or is deleted")
+                continue
+            if allowed_store_ids is not None and product.store_id not in allowed_store_ids:
+                errors.append(f"Row {index}: Product {p_id_str} does not belong to your store")
                 continue
 
             # 2. Update product image if provided

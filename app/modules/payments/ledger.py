@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core import config
-from app.modules.payments.models import LedgerEntry, Settlement, Payment
+from app.modules.payments.models import LedgerEntry, Payment
 from app.modules.pricing.models import PricingSnapshot
 
 
@@ -20,7 +20,9 @@ class LedgerService:
         """
         Creates a Paystack Subaccount for a merchant.
         """
-        paystack_key = getattr(config, "PAYSTACK_SECRET_KEY", "sk_test_c816d68a9a784dadcc2a1f8c76af63c238600d76")
+        paystack_key = config.PAYSTACK_SECRET_KEY
+        if not paystack_key:
+            return {"success": False, "subaccount_code": None, "message": "PAYSTACK_SECRET_KEY is not configured"}
         url = "https://api.paystack.co/subaccount"
         headers = {
             "Authorization": f"Bearer {paystack_key}",
@@ -45,14 +47,14 @@ class LedgerService:
                 }
             return {
                 "success": False,
-                "subaccount_code": f"ACCT_MOCK_{uuid.uuid4().hex[:8].upper()}",
-                "message": data.get("message", "Subaccount creation simulated")
+                "subaccount_code": None,
+                "message": data.get("message", "Paystack rejected the subaccount request")
             }
         except Exception as e:
             return {
-                "success": True, # Fallback mock subaccount code for sandbox/local dev
-                "subaccount_code": f"ACCT_MOCK_{uuid.uuid4().hex[:8].upper()}",
-                "message": f"Simulated subaccount due to: {str(e)}"
+                "success": False,
+                "subaccount_code": None,
+                "message": f"Could not reach Paystack: {e}"
             }
 
     @staticmethod
@@ -103,7 +105,7 @@ class LedgerService:
             )
             session.add(entry_rider)
 
-        await session.commit()
+        await session.flush()
         return {
             "success": True,
             "order_id": order_id,

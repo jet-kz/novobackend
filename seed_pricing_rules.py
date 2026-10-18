@@ -9,7 +9,8 @@ from app.modules.pricing.models import (
     PromotionRedemption,
     PricingSnapshot
 )
-from app.modules.payments.models import LedgerEntry, Settlement
+from app.modules.payments.models import LedgerEntry
+from app.modules.payouts.models import Settlement
 
 
 async def seed_pricing_system():

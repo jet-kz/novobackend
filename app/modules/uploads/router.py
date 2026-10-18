@@ -1,184 +1,121 @@
-import io
-import mimetypes
+import asyncio
 import uuid
 from typing import List
-from PIL import Image
+
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.access import assert_store_access, get_owned_store_ids, is_admin
+from app.core.database import get_db
+from app.core.images import process_image
 from app.core.security import get_current_user
 from app.integrations.supabase.client import supabase
 
 router = APIRouter()
-
-ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 BUCKET_MAP = {
     "avatars": "avatars",
     "store-logos": "store-assets",
     "store-banners": "store-assets",
     "product-images": "product-images",
+    "rider-documents": "rider-documents",
 }
+STORE_BUCKETS = {"store-logos", "store-banners", "product-images"}
+# Not publicly readable; served through short-lived signed links (see signed_url).
+PRIVATE_BUCKETS = {"rider-documents"}
+SIGNED_URL_SECONDS = 3600
+MAX_BULK_FILES = 10
 
 
-def optimize_image(
-    file_bytes: bytes,
-    content_type: str,
-    max_dimension: int = 1600,
-    quality: int = 80
-) -> tuple[bytes, str]:
-    """
-    Resizes and compresses images using Pillow.
-    - Scales down proportionally if width/height exceed max_dimension.
-    - Applies quality compression for JPEG/WebP.
-    - Preserves format and returns optimized bytes and MIME type.
-    """
-    try:
-        image = Image.open(io.BytesIO(file_bytes))
-        
-        # Check dimensions and resize if necessary
-        width, height = image.size
-        if width > max_dimension or height > max_dimension:
-            ratio = min(max_dimension / width, max_dimension / height)
-            new_size = (int(width * ratio), int(height * ratio))
-            try:
-                resample = Image.Resampling.LANCZOS
-            except AttributeError:
-                resample = Image.ANTIALIAS
-            image = image.resize(new_size, resample=resample)
-        
-        img_byte_arr = io.BytesIO()
-        
-        # Format preservation
-        if content_type == "image/jpeg":
-            image.save(img_byte_arr, format="JPEG", quality=quality, optimize=True)
-        elif content_type == "image/webp":
-            image.save(img_byte_arr, format="WEBP", quality=quality, method=6)
-        elif content_type == "image/png":
-            image.save(img_byte_arr, format="PNG", optimize=True)
-        elif content_type == "image/gif":
-            return file_bytes, content_type
-        else:
-            if image.mode != "RGB":
-                image = image.convert("RGB")
-            image.save(img_byte_arr, format="JPEG", quality=quality, optimize=True)
-            content_type = "image/jpeg"
-            
-        return img_byte_arr.getvalue(), content_type
-    except Exception:
-        # Fallback to original file on failure
-        return file_bytes, content_type
-
-
-async def handle_upload(
-    file: UploadFile,
-    bucket: str,
-    folder: str,
-    user_id: str
-) -> dict:
-    """
-    Helper function to process, compress, and upload a single file to Supabase storage.
-    """
-    content_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or ""
-    if content_type not in ALLOWED_IMAGE_TYPES:
+def _check_bucket(bucket: str) -> None:
+    if bucket not in BUCKET_MAP:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported type '{content_type}'. Use JPEG, PNG, WebP, or GIF."
+            detail=f"Invalid bucket. Use one of: {', '.join(BUCKET_MAP.keys())}",
         )
 
-    contents = await file.read()
-    if len(contents) > MAX_FILE_SIZE_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="File exceeds 10MB limit"
-        )
 
-    # Process and compress image
-    contents, content_type = optimize_image(contents, content_type)
+async def _resolve_folder(db: AsyncSession, bucket: str, folder: str, user: dict) -> str:
+    """Store images live under the store's id (owner or admin only); everything else under the user's id."""
+    folder = (folder or "").strip().strip("/")
+    if bucket in STORE_BUCKETS and folder:
+        await assert_store_access(db, folder, user)
+        return folder
+    return str(user["user_id"])
 
-    ext = (file.filename or "file").rsplit(".", 1)[-1] if "." in (file.filename or "") else "jpg"
-    if content_type == "image/jpeg" and ext not in ("jpg", "jpeg"):
-        ext = "jpg"
-    elif content_type == "image/png" and ext != "png":
-        ext = "png"
-    elif content_type == "image/webp" and ext != "webp":
-        ext = "webp"
 
-    # UUID based uniquely identifying filename to avoid naming conflicts
-    unique_id = uuid.uuid4().hex
-    storage_bucket = BUCKET_MAP[bucket]
-    prefix = f"{folder}/" if folder else ""
-    file_path = f"{prefix}{bucket}_{unique_id}.{ext}"
+def _store(storage_bucket: str, path: str, data: bytes, content_type: str) -> str:
+    bucket = supabase.storage.from_(storage_bucket)
+    bucket.upload(
+        path=path,
+        file=data,
+        file_options={"content-type": content_type, "upsert": "true", "cache-control": "31536000"},
+    )
+    if storage_bucket in PRIVATE_BUCKETS:
+        return signed_url(storage_bucket, path) or ""
+    return bucket.get_public_url(path)
 
+
+def signed_url(storage_bucket: str, path: str | None) -> str | None:
+    """Temporary link to a private file (e.g. a rider's ID for the admin reviewing it)."""
+    if not path:
+        return None
     try:
-        supabase.storage.from_(storage_bucket).upload(
-            path=file_path,
-            file=contents,
-            file_options={"content-type": content_type, "upsert": "true", "cacheControl": "31536000"}
-        )
-        public_url = supabase.storage.from_(storage_bucket).get_public_url(file_path)
+        return supabase.storage.from_(storage_bucket).create_signed_url(path, SIGNED_URL_SECONDS).get("signedURL")
+    except Exception:
+        return None
+
+
+async def handle_upload(file: UploadFile, bucket: str, folder: str) -> dict:
+    """Normalise one image (orientation, size, WebP) and put it in Supabase Storage."""
+    raw = await file.read()
+    data, content_type, ext = await asyncio.to_thread(process_image, raw, bucket)
+
+    storage_bucket = BUCKET_MAP[bucket]
+    file_path = f"{folder}/{bucket}_{uuid.uuid4().hex}.{ext}"
+    try:
+        public_url = await asyncio.to_thread(_store, storage_bucket, file_path, data, content_type)
     except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Storage upload failed for file '{file.filename}': {str(e)}"
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Couldn't save '{file.filename}' to storage. Please try again. ({e})",
         )
-
-    return {
-        "url": public_url,
-        "bucket": storage_bucket,
-        "path": file_path,
-    }
+    return {"url": public_url, "bucket": storage_bucket, "path": file_path, "size": len(data)}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def upload_file(
     bucket: str = Query(..., description="One of: avatars | store-logos | store-banners | product-images"),
-    folder: str = Query(default="", description="Optional subfolder path e.g. store_id or product_id"),
+    folder: str = Query(default="", description="Store id for store images; ignored for avatars"),
     file: UploadFile = File(...),
-    current_user: dict = Depends(get_current_user)
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    """
-    Upload a single file with on-the-fly image optimization and UUID naming.
-    """
-    if bucket not in BUCKET_MAP:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid bucket. Use one of: {', '.join(BUCKET_MAP.keys())}"
-        )
-
-    upload_data = await handle_upload(file, bucket, folder, current_user.get("user_id", "anonymous"))
-
-    return {
-        "success": True,
-        "message": "File uploaded successfully",
-        "data": upload_data
-    }
+    """Upload one image. It is rotated upright, resized for its use and saved as WebP."""
+    _check_bucket(bucket)
+    target = await _resolve_folder(db, bucket, folder, current_user)
+    upload_data = await handle_upload(file, bucket, target)
+    return {"success": True, "message": "File uploaded successfully", "data": upload_data}
 
 
 @router.post("/bulk", status_code=status.HTTP_201_CREATED)
 async def upload_files_bulk(
     bucket: str = Query(..., description="One of: avatars | store-logos | store-banners | product-images"),
-    folder: str = Query(default="", description="Optional subfolder path e.g. store_id or product_id"),
+    folder: str = Query(default="", description="Store id for store images; ignored for avatars"),
     files: List[UploadFile] = File(...),
-    current_user: dict = Depends(get_current_user)
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    """
-    Upload multiple files with on-the-fly image optimization and UUID naming.
-    """
-    if bucket not in BUCKET_MAP:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid bucket. Use one of: {', '.join(BUCKET_MAP.keys())}"
-        )
-
-    uploaded_files = []
-    for file in files:
-        upload_data = await handle_upload(file, bucket, folder, current_user.get("user_id", "anonymous"))
-        uploaded_files.append(upload_data)
-
+    """Upload up to 10 images with the same processing as the single upload."""
+    _check_bucket(bucket)
+    if len(files) > MAX_BULK_FILES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Upload at most {MAX_BULK_FILES} images at once")
+    target = await _resolve_folder(db, bucket, folder, current_user)
+    uploaded_files = [await handle_upload(f, bucket, target) for f in files]
     return {
         "success": True,
         "message": f"Successfully uploaded {len(uploaded_files)} file(s)",
-        "data": uploaded_files
+        "data": uploaded_files,
     }
 
 
@@ -186,31 +123,36 @@ async def upload_files_bulk(
 async def delete_file(
     bucket: str = Query(..., description="One of: avatars | store-logos | store-banners | product-images"),
     path: str = Query(..., description="File path relative to the bucket (e.g. folder/filename.ext)"),
-    current_user: dict = Depends(get_current_user)
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    """
-    Delete a file from Supabase Storage.
-    """
-    if bucket not in BUCKET_MAP:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid bucket. Use one of: {', '.join(BUCKET_MAP.keys())}"
-        )
+    """Delete an image. Allowed for admins, or for files under your own user id or a store you own."""
+    _check_bucket(bucket)
+    owner_folder = path.strip("/").split("/", 1)[0]
+    if ".." in path or not owner_folder:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid path")
+    if not is_admin(current_user) and owner_folder != str(current_user["user_id"]):
+        owned = {str(sid) for sid in await get_owned_store_ids(db, current_user["user_id"])}
+        if owner_folder not in owned:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can't delete this file")
 
     storage_bucket = BUCKET_MAP[bucket]
     try:
-        supabase.storage.from_(storage_bucket).remove([path])
+        await asyncio.to_thread(supabase.storage.from_(storage_bucket).remove, [path])
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Storage delete failed: {str(e)}"
-        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Storage delete failed: {e}")
+    return {"success": True, "message": "File deleted successfully", "data": {"bucket": storage_bucket, "path": path}}
 
-    return {
-        "success": True,
-        "message": "File deleted successfully",
-        "data": {
-            "bucket": storage_bucket,
-            "path": path
-        }
-    }
+
+def ensure_buckets() -> None:
+    """Create the public image buckets if they don't exist yet (idempotent; runs at startup)."""
+    existing = {b.name for b in supabase.storage.list_buckets()}
+    for name in sorted(set(BUCKET_MAP.values()) - existing):
+        supabase.storage.create_bucket(
+            name,
+            options={
+                "public": name not in PRIVATE_BUCKETS,
+                "file_size_limit": 5 * 1024 * 1024,  # processed images are far smaller than this
+                "allowed_mime_types": ["image/webp", "image/gif", "image/jpeg", "image/png"],
+            },
+        )

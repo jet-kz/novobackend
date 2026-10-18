@@ -279,5 +279,6 @@ class PricingEngine:
             details_json=breakdown.details
         )
         session.add(snapshot)
-        await session.commit()
+        # Caller owns the transaction so the order, items and snapshot commit together.
+        await session.flush()
         return snapshot
