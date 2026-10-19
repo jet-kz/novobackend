@@ -135,10 +135,15 @@ class PricingEngine:
         )
         campaign = res.scalar_one_or_none()
 
-        if not campaign:
-            return {"valid": False, "discount": 0.0, "message": f"Promo code '{code}' is invalid or expired"}
+        if not campaign or getattr(campaign, "deleted_at", None):
+            return {"valid": False, "discount": 0.0, "message": f"Promo code '{code}' isn't valid"}
+
+        if campaign.applicable_merchant_id and merchant_id and str(campaign.applicable_merchant_id) != str(merchant_id):
+            return {"valid": False, "discount": 0.0, "message": f"{campaign.code} only works at the store that issued it"}
 
         now = datetime.utcnow()
+        if campaign.starts_at and campaign.starts_at > now:
+            return {"valid": False, "discount": 0.0, "message": f"{campaign.code} starts on {campaign.starts_at:%d %b %Y}"}
         if campaign.ends_at and campaign.ends_at < now:
             return {"valid": False, "discount": 0.0, "message": "Promo code has expired"}
 
@@ -212,11 +217,13 @@ class PricingEngine:
         applied_code = None
         funding_source = "PLATFORM"
         merchant_promo_deduction = 0.0
+        promo_message = None
 
         if req.promo_code:
             promo_res = await PricingEngine.evaluate_promotion(
                 session, req.promo_code, subtotal, delivery_fee, req.merchant_id, req.user_id
             )
+            promo_message = promo_res.get("message")
             if promo_res["valid"]:
                 discount = promo_res["discount"]
                 applied_code = promo_res["code"]
@@ -252,7 +259,8 @@ class PricingEngine:
             details={
                 "delivery_rule": del_res["rule_name"],
                 "service_rule": serv_res["rule_name"],
-                "commission_rule": comm_res["rule_name"]
+                "commission_rule": comm_res["rule_name"],
+                "promo_message": promo_message,
             }
         )
 

@@ -1,9 +1,13 @@
-from fastapi import APIRouter, Depends, status, Path, Body, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Path, Body, Query, Response
+from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from app.core.database import get_db
 from app.core.security import get_current_user, require_role
 from app.core.access import assert_store_access
+from app.modules.products import csv_io
+from app.modules.products.models import Product
 from app.modules.products.service import ProductService
 
 
@@ -64,6 +68,98 @@ async def delete_section(section_id: str = Path(...), db: AsyncSession = Depends
     await assert_store_access(db, section.store_id, current_user)
     await ProductService.delete_section(db, section)
     return {"success": True, "message": "Section removed", "data": None}
+
+
+# ── Spreadsheet import / export ─────────────────────────────────────────────
+
+def _csv_response(text: str, filename: str) -> Response:
+    return Response(
+        content=text.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+async def _store_products(db: AsyncSession, store_id):
+    res = await db.execute(
+        select(Product).options(selectinload(Product.category)).where(Product.store_id == store_id, Product.is_deleted == False)
+    )
+    return list(res.scalars().all())
+
+
+@router.get("/csv/template", status_code=status.HTTP_200_OK)
+async def csv_template(kind: str = Query("food")):
+    """Blank template with example rows for food, grocery or pharmacy stores."""
+    if kind not in csv_io.KINDS:
+        raise HTTPException(status_code=400, detail="kind must be food, grocery or pharmacy")
+    return _csv_response(csv_io.template_csv(kind), f"novo-{kind}-template.csv")
+
+
+@router.get("/csv/export", status_code=status.HTTP_200_OK)
+async def csv_export(
+    store_id: str = Query(...), kind: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user),
+):
+    """The store's current items in the template format, ready to edit and upload back."""
+    store = await assert_store_access(db, store_id, current_user)
+    kind = kind if kind in csv_io.KINDS else csv_io.kind_for_store_type(store.store_type)
+    products = await _store_products(db, store.id)
+    safe_name = "".join(ch for ch in (store.name or "store") if ch.isalnum() or ch in "-_ ").strip().replace(" ", "-") or "store"
+    return _csv_response(csv_io.export_csv(kind, products), f"{safe_name}-{kind}-items.csv")
+
+
+@router.post("/csv/import", status_code=status.HTTP_200_OK)
+async def csv_import(
+    store_id: str = Query(...),
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Check (dry_run=true) or apply an uploaded CSV. Body: {csv, kind?, dry_run, skip_invalid}.
+    Nothing is saved while any row has errors unless skip_invalid is true.
+    """
+    store = await assert_store_access(db, store_id, current_user)
+    kind = payload.get("kind") if payload.get("kind") in csv_io.KINDS else csv_io.kind_for_store_type(store.store_type)
+    text = payload.get("csv")
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(status_code=400, detail="Upload a CSV file")
+    existing = await _store_products(db, store.id)
+    result = csv_io.parse_rows(text, kind, existing)
+    result["kind"] = kind
+    if payload.get("dry_run", True) or result["file_errors"]:
+        result["applied"] = False
+        return {"success": True, "data": result}
+    if result["summary"]["errors"] and not payload.get("skip_invalid"):
+        raise HTTPException(status_code=400, detail="Some rows have errors. Fix them, or choose to skip those rows.")
+
+    by_id = {str(p.id): p for p in existing}
+    created = updated = 0
+    for row in result["rows"]:
+        if row["errors"]:
+            continue
+        data = dict(row["data"])
+        if row["action"] == "update":
+            current = by_id[row["product_id"]]
+            # Empty cells keep what's there rather than wiping it.
+            for key in ("image", "description", "category"):
+                if not data.get(key):
+                    data.pop(key, None)
+            merged = dict(current.specs or {}) if isinstance(current.specs, dict) else {}
+            merged.update(data.get("specs") or {})
+            data["specs"] = merged
+            if "optionGroups" not in data:
+                data.pop("optionGroups", None)
+            await ProductService.update_product(db, row["product_id"], data)
+            updated += 1
+        else:
+            data["storeId"] = str(store.id)
+            data.setdefault("preparationTimeMinutes", 20 if kind == "food" else None)
+            await ProductService.create_product(db, {k: v for k, v in data.items() if v is not None})
+            created += 1
+    result["applied"] = True
+    result["created"], result["updated"] = created, updated
+    return {"success": True, "message": f"Imported {created} new and updated {updated} item(s)", "data": result}
 
 
 @router.get("/{product_id}", status_code=status.HTTP_200_OK)

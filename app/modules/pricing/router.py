@@ -1,10 +1,11 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.database import get_db
-from app.core.security import require_role
+from app.core.security import get_current_user, require_role
+from app.modules.pricing import merchant_promos
 from app.modules.pricing.schemas import (
     PricingCalculateRequest,
     PricingBreakdownResponse,
@@ -181,8 +182,8 @@ async def save_service_fee_rule(
 
 @router.get("/promotions")
 async def get_promotions(db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
-    res = await db.execute(select(PromotionCampaign))
-    return res.scalars().all()
+    res = await db.execute(select(PromotionCampaign).where(PromotionCampaign.deleted_at.is_(None)))
+    return [merchant_promos.serialize(c) for c in res.scalars().all()]
 
 
 @router.post("/promotions")
@@ -210,3 +211,60 @@ async def create_promotion(
     db.add(campaign)
     await db.commit()
     return campaign
+
+
+# ── Store promo codes (run and paid for by the merchant) ─────────────────────
+
+
+
+@router.get("/merchant-promo-rules")
+async def merchant_promo_rules():
+    """The limits every store promo must respect (shown on the merchant's promotions page)."""
+    return {"success": True, "data": merchant_promos.rules_for_display()}
+
+
+@router.get("/my-promotions")
+async def my_promotions(db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    merchant = await merchant_promos.merchant_for_user(db, current_user["user_id"])
+    return {"success": True, "data": await merchant_promos.list_mine(db, str(merchant.id))}
+
+
+@router.post("/my-promotions", status_code=201)
+async def create_my_promotion(payload: dict = Body(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    merchant = await merchant_promos.merchant_for_user(db, current_user["user_id"])
+    return {"success": True, "data": await merchant_promos.create(db, str(merchant.id), payload)}
+
+
+@router.patch("/my-promotions/{promo_id}")
+async def update_my_promotion(promo_id: str, payload: dict = Body(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    merchant = await merchant_promos.merchant_for_user(db, current_user["user_id"])
+    return {"success": True, "data": await merchant_promos.update(db, str(merchant.id), promo_id, payload)}
+
+
+@router.delete("/my-promotions/{promo_id}")
+async def delete_my_promotion(promo_id: str, db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    merchant = await merchant_promos.merchant_for_user(db, current_user["user_id"])
+    result = await merchant_promos.delete(db, str(merchant.id), promo_id)
+    return {"success": True, "data": {"result": result}}
+
+
+@router.patch("/promotions/{promo_id}")
+async def admin_toggle_promotion(
+    promo_id: str, payload: dict = Body(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin")),
+):
+    """Pause or resume any promotion (platform or store)."""
+    campaign = await db.get(PromotionCampaign, promo_id)
+    if not campaign or campaign.deleted_at:
+        raise HTTPException(status_code=404, detail="Promotion not found")
+    if "is_active" in payload:
+        campaign.is_active = bool(payload["is_active"])
+    await db.commit()
+    return merchant_promos.serialize(campaign)
+
+
+@router.delete("/promotions/{promo_id}")
+async def admin_delete_promotion(promo_id: str, db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
+    campaign = await db.get(PromotionCampaign, promo_id)
+    if not campaign or campaign.deleted_at:
+        raise HTTPException(status_code=404, detail="Promotion not found")
+    return {"success": True, "data": {"result": await merchant_promos.remove(db, campaign)}}

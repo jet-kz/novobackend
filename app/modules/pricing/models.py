@@ -69,6 +69,8 @@ class PromotionCampaign(Base):
     usage_limit = Column(Integer, nullable=True) # Total global redemptions allowed
     per_user_limit = Column(Integer, nullable=False, default=1)
     current_redemptions = Column(Integer, nullable=False, default=0)
+    # Set when a used code is removed: kept for order history, never offered again.
+    deleted_at = Column(DateTime, nullable=True)
     starts_at = Column(DateTime, default=datetime.utcnow)
     ends_at = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True)

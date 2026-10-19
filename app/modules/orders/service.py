@@ -489,7 +489,8 @@ class OrderService:
             ),
         )
         if promo_code and not breakdown.applied_promo_code and require_address:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Promo code is not valid for this order")
+            reason = (breakdown.details or {}).get("promo_message") or "Promo code is not valid for this order"
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
 
         return SimpleNamespace(
             store=store, items=items, breakdown=breakdown, tip=tip, address=address,
@@ -511,6 +512,7 @@ class OrderService:
             "distance_km": ctx.distance_km,
             "applied_promo_code": b.applied_promo_code,
             "promo_valid": bool(b.applied_promo_code) if ctx.promo_code else None,
+            "promo_message": (b.details or {}).get("promo_message") if ctx.promo_code else None,
             "items": [{**to_jsonable(i), "product_id": str(i["product_id"])} for i in ctx.items],
         }
 
