@@ -29,6 +29,7 @@ PRESETS = {
     "avatars": Preset(512, 512, square=True),
     "store-logos": Preset(512, 512, square=True),
     "store-banners": Preset(1600, 1000, quality=78),
+    "promo-banners": Preset(1800, 1000, quality=80),
     "product-images": Preset(1000, 1000),
     # Rider ID documents: keep the whole card legible, never crop.
     "rider-documents": Preset(1600, 1600, quality=85),

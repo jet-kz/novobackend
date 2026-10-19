@@ -4,6 +4,7 @@ Anyone can read the active ones; admins manage them.
 """
 import re
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from sqlalchemy import func
@@ -13,7 +14,8 @@ from sqlalchemy.future import select
 from app.core.database import get_db
 from app.core.security import require_role
 from app.core.serializers import model_to_dict
-from app.modules.catalog.models import HomeCollection, PlatformCategory
+from app.core import audit
+from app.modules.catalog.models import HomeCollection, PlatformCategory, PromoBanner
 from app.modules.stores.models import Store
 
 router = APIRouter()
@@ -143,6 +145,117 @@ async def update_collection(item_id: str = Path(...), payload: dict = Body(...),
 @router.delete("/collections/{item_id}", status_code=status.HTTP_200_OK)
 async def delete_collection(item_id: str = Path(...), db: AsyncSession = Depends(get_db), _: dict = Depends(require_role("admin"))):
     row = await _get(db, HomeCollection, item_id)
+    await db.delete(row)
+    await db.commit()
+    return {"success": True, "data": None}
+
+
+# ── Promo banners ───────────────────────────────────────────────────────────
+
+BANNER_FIELDS = {"title", "subtitle", "image", "cta_label", "link_url", "placement", "show_text", "display_order", "is_active"}
+BANNER_PLACEMENTS = {"home", "shop"}
+
+
+def _parse_when(value):
+    if value in (None, ""):
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use a valid date for the schedule")
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _valid_link(link: str) -> bool:
+    return (link.startswith("/") and not link.startswith("//")) or link.startswith("https://")
+
+
+def _apply_banner(row: PromoBanner, payload: dict) -> None:
+    for key in BANNER_FIELDS & payload.keys():
+        value = payload[key]
+        if key == "display_order":
+            value = int(value or 0)
+        elif key in ("is_active", "show_text"):
+            value = bool(value)
+        elif isinstance(value, str):
+            value = value.strip() or None
+        setattr(row, key, value)
+    for key in ("starts_at", "ends_at"):
+        if key in payload:
+            setattr(row, key, _parse_when(payload[key]))
+
+    if not row.image or not str(row.image).startswith("https://"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload a banner image")
+    if row.link_url and not _valid_link(row.link_url):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Link must be a page on Novo (starting with /) or an https:// address",
+        )
+    row.placement = row.placement if row.placement in BANNER_PLACEMENTS else "home"
+    if row.starts_at and row.ends_at and row.ends_at <= row.starts_at:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The end date must be after the start date")
+
+
+def _banner_dict(row: PromoBanner) -> dict:
+    data = model_to_dict(row)
+    now = datetime.now(timezone.utc)
+    if not row.is_active:
+        data["state"] = "hidden"
+    elif row.starts_at and row.starts_at > now:
+        data["state"] = "scheduled"
+    elif row.ends_at and row.ends_at <= now:
+        data["state"] = "ended"
+    else:
+        data["state"] = "live"
+    return data
+
+
+@router.get("/banners", status_code=status.HTTP_200_OK)
+async def list_banners(placement: str = Query("home"), include_inactive: bool = Query(False), db: AsyncSession = Depends(get_db)):
+    """Live banners for a placement, in order. The admin screen passes include_inactive to see everything."""
+    stmt = select(PromoBanner).order_by(PromoBanner.display_order, PromoBanner.created_at)
+    if placement != "all":
+        stmt = stmt.where(PromoBanner.placement == placement)
+    rows = [_banner_dict(r) for r in (await db.execute(stmt)).scalars().all()]
+    if not include_inactive:
+        rows = [r for r in rows if r["state"] == "live"]
+    return {"success": True, "data": rows}
+
+
+@router.post("/banners", status_code=status.HTTP_201_CREATED)
+async def create_banner(payload: dict = Body(...), db: AsyncSession = Depends(get_db), actor: dict = Depends(require_role("admin"))):
+    count = (await db.execute(select(func.count()).select_from(PromoBanner))).scalar() or 0
+    row = PromoBanner(display_order=count + 1, is_active=True, show_text=True, placement="home")
+    _apply_banner(row, payload)
+    db.add(row)
+    await db.flush()
+    audit.record(db, actor, "banner.create", "banner", row.id, {"title": row.title})
+    await db.commit()
+    return {"success": True, "data": _banner_dict(row)}
+
+
+@router.post("/banners/reorder", status_code=status.HTTP_200_OK)
+async def reorder_banners(payload: dict = Body(...), db: AsyncSession = Depends(get_db), _: dict = Depends(require_role("admin"))):
+    for position, item_id in enumerate(payload.get("ids") or [], start=1):
+        row = await _get(db, PromoBanner, str(item_id))
+        row.display_order = position
+    await db.commit()
+    return {"success": True, "data": None}
+
+
+@router.patch("/banners/{item_id}", status_code=status.HTTP_200_OK)
+async def update_banner(item_id: str = Path(...), payload: dict = Body(...), db: AsyncSession = Depends(get_db), actor: dict = Depends(require_role("admin"))):
+    row = await _get(db, PromoBanner, item_id)
+    _apply_banner(row, payload)
+    audit.record(db, actor, "banner.update", "banner", row.id, {"title": row.title, "active": row.is_active})
+    await db.commit()
+    return {"success": True, "data": _banner_dict(row)}
+
+
+@router.delete("/banners/{item_id}", status_code=status.HTTP_200_OK)
+async def delete_banner(item_id: str = Path(...), db: AsyncSession = Depends(get_db), actor: dict = Depends(require_role("admin"))):
+    row = await _get(db, PromoBanner, item_id)
+    audit.record(db, actor, "banner.delete", "banner", row.id, {"title": row.title})
     await db.delete(row)
     await db.commit()
     return {"success": True, "data": None}

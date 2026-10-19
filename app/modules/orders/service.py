@@ -34,6 +34,7 @@ from app.modules.orders.status import (
     normalize_order_status,
 )
 from app.modules.products.models import Product
+from app.modules.products.options import price_selection
 from app.modules.stores.models import Store
 from app.modules.notifications import service as notify
 
@@ -75,29 +76,29 @@ def pickup_code_for(order_id: str) -> str:
     return str(1000 + int(digest[:8], 16) % 9000)
 
 
+def delivery_code_for(order_id: str) -> str:
+    """4-digit code the customer gives the rider at the door. Only the customer and admins see it."""
+    salt = config.SUPABASE_JWT_SECRET or "novo-dropoff"
+    digest = hashlib.sha256(f"dropoff:{salt}:{order_id}".encode()).hexdigest()
+    return str(1000 + int(digest[:8], 16) % 9000)
+
+
+# Rough city riding speed for ETAs when we only have straight-line distance.
+RIDER_SPEED_KMH = 22.0
+ROAD_FACTOR = 1.35
+
+
+def eta_minutes(from_lat: float, from_lon: float, to_lat: float, to_lon: float) -> int:
+    km = haversine_km(from_lat, from_lon, to_lat, to_lon) * ROAD_FACTOR
+    return max(1, round(km / RIDER_SPEED_KMH * 60 + 1))
+
+
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     r = 6371.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp, dl = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * r * math.asin(math.sqrt(a))
-
-
-def _option_price_index(product) -> dict:
-    """id -> price for every option a product defines, across all option formats."""
-    index = {}
-    for opt in (product.protein_options or []) + (product.extras_options or []):
-        if isinstance(opt, dict) and opt.get("id") is not None:
-            index[str(opt["id"])] = float(opt.get("price") or 0)
-    for group in product.option_groups or []:
-        if not isinstance(group, dict):
-            continue
-        for opt in group.get("options") or []:
-            if isinstance(opt, dict) and opt.get("id") is not None:
-                index[str(opt["id"])] = float(opt.get("price") or 0)
-    for opt in getattr(product, "options", None) or []:
-        index[str(opt.id)] = float(opt.price or 0)
-    return index
 
 
 def price_order_items(raw_items: list, products_by_id: dict, store_id) -> tuple[list[dict], float]:
@@ -134,15 +135,8 @@ def price_order_items(raw_items: list, products_by_id: dict, store_id) -> tuple[
         if quantity < 1 or quantity > MAX_ITEM_QUANTITY:
             raise ValueError(f"Quantity for {product.name} must be between 1 and {MAX_ITEM_QUANTITY}")
 
-        option_prices = _option_price_index(product)
         addons_in = raw.get("addons") or raw.get("selectedOptions") or []
-        addons_out, addon_total = [], 0.0
-        for addon in addons_in if isinstance(addons_in, list) else []:
-            aid = str(addon.get("id")) if isinstance(addon, dict) else None
-            if aid is None or aid not in option_prices:
-                raise ValueError(f"An option for {product.name} is no longer available")
-            addon_total += option_prices[aid]
-            addons_out.append({"id": aid, "name": addon.get("name"), "price": option_prices[aid]})
+        addons_out, addon_total = price_selection(product, addons_in)
 
         unit_price = round(float(product.price or 0) + addon_total, 2)
         subtotal += unit_price * quantity
@@ -174,6 +168,7 @@ def serialize_order(
     delivery: Optional[Delivery] = None,
     include_pickup_code: bool = False,
     rider_info: Optional[dict] = None,
+    include_delivery_code: bool = False,
 ) -> dict:
     data = model_to_dict(order)
     data.pop("guest_token_hash", None)
@@ -198,9 +193,21 @@ def serialize_order(
             data["rider_phone"] = rider_info.get("phone")
             # Live position only while the rider is on the job.
             if delivery.status in ("assigned", "picked_up"):
-                data["rider_location"] = rider_info.get("location")
+                rider_loc = rider_info.get("location")
+                data["rider_location"] = rider_loc
+                # Minutes until the rider reaches their next stop (store before pickup, customer after).
+                target = None
+                if delivery.status == "picked_up":
+                    if order.delivery_latitude is not None and order.delivery_longitude is not None:
+                        target = (order.delivery_latitude, order.delivery_longitude)
+                elif data.get("store_location"):
+                    target = (data["store_location"]["latitude"], data["store_location"]["longitude"])
+                if rider_loc and target:
+                    data["eta_minutes"] = eta_minutes(rider_loc["latitude"], rider_loc["longitude"], *target)
     if include_pickup_code:
         data["pickup_code"] = pickup_code_for(order.id)
+    if include_delivery_code and data["status"] not in (DELIVERED, CANCELLED, FAILED):
+        data["delivery_code"] = delivery_code_for(order.id)
     return data
 
 
@@ -208,7 +215,10 @@ class OrderService:
     # ── Reads ────────────────────────────────────────────────────────────────
 
     @staticmethod
-    async def _decorate(db: AsyncSession, orders: list, include_pickup_code: bool = False) -> list[dict]:
+    async def _decorate(
+        db: AsyncSession, orders: list, include_pickup_code: bool = False,
+        delivery_code_for_customer: Optional[str] = None, all_delivery_codes: bool = False,
+    ) -> list[dict]:
         if not orders:
             return []
         store_ids = {o.store_id for o in orders if o.store_id}
@@ -227,6 +237,7 @@ class OrderService:
             serialize_order(
                 o, stores.get(o.store_id), deliveries.get(o.id), include_pickup_code,
                 riders.get(deliveries[o.id].rider_id) if o.id in deliveries else None,
+                all_delivery_codes or (delivery_code_for_customer is not None and o.customer_id == delivery_code_for_customer),
             )
             for o in orders
         ]
@@ -321,7 +332,10 @@ class OrderService:
                 pass
 
         result = await db.execute(stmt.order_by(Order.created_at.desc()))
-        return await OrderService._decorate(db, list(result.scalars().unique().all()), include_code)
+        return await OrderService._decorate(
+            db, list(result.scalars().unique().all()), include_code,
+            delivery_code_for_customer=user_id, all_delivery_codes=is_admin(current_user),
+        )
 
     @staticmethod
     async def _load(db: AsyncSession, order_id: str) -> Order:
@@ -362,7 +376,10 @@ class OrderService:
         role = await OrderService._viewer_role(db, order, current_user)
         if role is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this order")
-        decorated = await OrderService._decorate(db, [order], include_pickup_code=role in ("admin", "merchant"))
+        decorated = await OrderService._decorate(
+            db, [order], include_pickup_code=role in ("admin", "merchant"),
+            delivery_code_for_customer=current_user["user_id"], all_delivery_codes=role == "admin",
+        )
         return decorated[0]
 
     @staticmethod
@@ -617,7 +634,7 @@ class OrderService:
     async def get_guest_order(db: AsyncSession, order_id: str, token: str) -> dict:
         order = await OrderService.load_guest_order(db, order_id, token)
         order = await OrderService._load(db, order.id)
-        decorated = await OrderService._decorate(db, [order])
+        decorated = await OrderService._decorate(db, [order], delivery_code_for_customer=order.customer_id)
         history = await db.execute(
             select(OrderStatusHistory).where(OrderStatusHistory.order_id == order.id).order_by(OrderStatusHistory.created_at.asc())
         )
@@ -681,6 +698,15 @@ class OrderService:
         elif target in (DELIVERED, FAILED):
             if role == "rider" and (not delivery or delivery.rider_id != uid):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This job is assigned to another rider")
+            if target == DELIVERED and role == "rider":
+                code = re.sub(r"\D", "", str(payload.get("delivery_code") or ""))
+                if not hmac.compare_digest(code, delivery_code_for(order.id)):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="That code doesn't match. Ask the customer for the 4-digit delivery code on their order screen.",
+                    )
+            if target == FAILED and role == "rider" and not str(payload.get("reason") or "").strip():
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Say why the delivery couldn't be completed")
             if delivery:
                 delivery.status = "delivered" if target == DELIVERED else "failed"
                 if target == DELIVERED:
@@ -707,7 +733,7 @@ class OrderService:
             old_status=current,
             new_status=target,
             changed_by_id=uid,
-            cancellation_reason=(payload.get("reason") or None) if target == CANCELLED else None,
+            cancellation_reason=(payload.get("reason") or None) if target in (CANCELLED, FAILED) else None,
         ))
         await db.commit()
         notify.order_status_changed(order.id, target, payload.get("reason") or None)

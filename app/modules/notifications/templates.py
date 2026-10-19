@@ -225,7 +225,7 @@ _STATUS_COPY = {
 
 
 def order_status_update(name: str | None, order_id: str, status: str, store_name: str, reason: str | None = None,
-                        show_link: bool = True) -> Email | None:
+                        show_link: bool = True, delivery_code: str | None = None) -> Email | None:
     copy = _STATUS_COPY.get(status)
     if not copy:
         return None
@@ -233,12 +233,20 @@ def order_status_update(name: str | None, order_id: str, status: str, store_name
     reason_txt = f" Reason: {reason}." if reason else ""
     message = blurb.format(store=store_name, reason=reason_txt)
     subject = f"{title} ({order_id})"
+    code_html = code_txt = ""
+    if delivery_code:
+        code_html = (
+            "<p>Give your rider this delivery code when they arrive:</p>"
+            f"<p style='font-size:28px;font-weight:800;letter-spacing:8px;margin:8px 0'>{escape(delivery_code)}</p>"
+            f"<p style='color:{MUTED}'>Only share it once you have your order in hand.</p>"
+        )
+        code_txt = f"Delivery code for your rider: {delivery_code}. Only share it once you have your order."
     html = _layout(
         title,
-        f"<p>{_greeting(name)}</p><p>{escape(message)}</p><p style='color:{MUTED}'>Order {escape(order_id)}</p>",
+        f"<p>{_greeting(name)}</p><p>{escape(message)}</p>{code_html}<p style='color:{MUTED}'>Order {escape(order_id)}</p>",
         ("View order", _url("/orders")) if show_link else None,
     )
-    return subject, html, _text(_greeting(name), "", message, f"Order {order_id}")
+    return subject, html, _text(_greeting(name), "", message, code_txt, f"Order {order_id}")
 
 
 def merchant_order_cancelled(store_name: str, order_id: str, reason: str | None) -> Email:
@@ -259,7 +267,7 @@ def rider_job_assigned(name: str | None, order_id: str, store_name: str, store_a
         "New delivery assigned",
         f"<p>{_greeting(name)}</p><p>Pick up order <strong>{escape(order_id)}</strong> from "
         f"<strong>{escape(store_name)}</strong>{(' at ' + escape(store_address)) if store_address else ''}. "
-        f"Ask the store for the 4-digit pickup code.</p><p>Earnings for this trip: <strong>{_naira(earnings)}</strong></p>",
+        f"Ask the store for the 4-digit pickup code, and the customer for their delivery code at the door.</p><p>Earnings for this trip: <strong>{_naira(earnings)}</strong></p>",
         ("Open Rider Hub", _url("/rider")),
     )
     return subject, html, _text(_greeting(name), "", f"Pick up order {order_id} from {store_name}.",

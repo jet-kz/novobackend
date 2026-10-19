@@ -19,7 +19,10 @@ BUCKET_MAP = {
     "store-banners": "store-assets",
     "product-images": "product-images",
     "rider-documents": "rider-documents",
+    "promo-banners": "store-assets",
 }
+# Platform-wide artwork only admins may upload.
+ADMIN_BUCKETS = {"promo-banners"}
 STORE_BUCKETS = {"store-logos", "store-banners", "product-images"}
 # Not publicly readable; served through short-lived signed links (see signed_url).
 PRIVATE_BUCKETS = {"rider-documents"}
@@ -93,7 +96,9 @@ async def upload_file(
 ):
     """Upload one image. It is rotated upright, resized for its use and saved as WebP."""
     _check_bucket(bucket)
-    target = await _resolve_folder(db, bucket, folder, current_user)
+    if bucket in ADMIN_BUCKETS and not is_admin(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admins can upload banners")
+    target = "banners" if bucket in ADMIN_BUCKETS else await _resolve_folder(db, bucket, folder, current_user)
     upload_data = await handle_upload(file, bucket, target)
     return {"success": True, "message": "File uploaded successfully", "data": upload_data}
 
@@ -108,6 +113,8 @@ async def upload_files_bulk(
 ):
     """Upload up to 10 images with the same processing as the single upload."""
     _check_bucket(bucket)
+    if bucket in ADMIN_BUCKETS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload banners one at a time")
     if len(files) > MAX_BULK_FILES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Upload at most {MAX_BULK_FILES} images at once")
     target = await _resolve_folder(db, bucket, folder, current_user)

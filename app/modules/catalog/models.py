@@ -33,3 +33,23 @@ class HomeCollection(Base):
     display_order = Column(Integer, nullable=False, default=0)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PromoBanner(Base):
+    """Rotating ad/promo banner on the homepage. Admins upload the artwork and schedule it."""
+    __tablename__ = "promo_banners"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title = Column(String(120), nullable=True)
+    subtitle = Column(String(240), nullable=True)
+    image = Column(String(500), nullable=False)
+    cta_label = Column(String(40), nullable=True)
+    link_url = Column(String(500), nullable=True)  # "/shop?store=..." or https://...
+    placement = Column(String(30), nullable=False, default="home", index=True)
+    # Off when the artwork already carries its own text, so we don't print a title over it.
+    show_text = Column(Boolean, nullable=False, default=True)
+    display_order = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    starts_at = Column(DateTime(timezone=True), nullable=True)
+    ends_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -125,7 +125,7 @@ _CUSTOMER_PUSH = {
     "PREPARING": ("Being prepared", "{store} is preparing your order."),
     "READY_FOR_PICKUP": ("Order ready", "Your order is packed and waiting for a rider."),
     "RIDER_ASSIGNED": ("Rider assigned", "A rider is heading to {store} for your order."),
-    "PICKED_UP": ("On the way", "Your rider has your order and is heading to you."),
+    "PICKED_UP": ("On the way", "Your rider has your order and is heading to you. Delivery code: {code}"),
     "DELIVERED": ("Delivered", "Your order from {store} has arrived. Enjoy!"),
     "CANCELLED": ("Order cancelled", "Your order from {store} was cancelled.{reason}"),
     "FAILED": ("Delivery problem", "We couldn't deliver your order from {store}.{reason}"),
@@ -250,11 +250,14 @@ async def order_status_changed(db, order_id: str, new_status: str, reason: str |
         return
     order, _, store, merchant, _ = ctx
     store_name = store.name if store else "the store"
+    from app.modules.orders.service import delivery_code_for
+
+    code = delivery_code_for(order.id) if new_status == "PICKED_UP" else None
     copy = _CUSTOMER_PUSH.get(new_status)
     if copy and not by_customer:
         title, body = copy
         await alert(
-            db, title=title, body=body.format(store=store_name, reason=f" Reason: {reason}." if reason else ""),
+            db, title=title, body=body.format(store=store_name, reason=f" Reason: {reason}." if reason else "", code=code or ""),
             url=_customer_url(order), user_ids=[order.customer_id], guest_order_id=order.id, tag=f"order-{order.id}",
         )
     if new_status == "READY_FOR_PICKUP":
@@ -275,7 +278,7 @@ async def order_status_changed(db, order_id: str, new_status: str, reason: str |
         await _send_to_customer(
             db, order,
             lambda name: templates.order_status_update(
-                name, order.id, new_status, store_name, reason, show_link=not order.guest_token_hash
+                name, order.id, new_status, store_name, reason, show_link=not order.guest_token_hash, delivery_code=code,
             ),
         )
     if new_status == "CANCELLED" and by_customer and merchant:

@@ -4,6 +4,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 from app.modules.products.models import Product, ProductCategory
+from app.modules.products.options import OptionGroupError, effective_option_groups, normalize_option_groups
 from app.core.serializers import model_to_dict
 from typing import Optional
 import re
@@ -26,7 +27,8 @@ def serialize_product(product: Product) -> dict:
     data["inStock"] = bool(product.in_stock)
     data["proteinOptions"] = product.protein_options or []
     data["extrasOptions"] = product.extras_options or []
-    data["optionGroups"] = product.option_groups or []
+    data["optionGroups"] = effective_option_groups(product)
+    data["option_groups"] = data["optionGroups"]
     data["preparationTimeMinutes"] = product.preparation_time_minutes
     return data
 
@@ -205,6 +207,14 @@ class ProductService:
                 payload[snake] = payload.pop(camel)
             else:
                 payload.pop(camel, None)
+        if "option_groups" in payload:
+            try:
+                payload["option_groups"] = normalize_option_groups(payload["option_groups"])
+            except OptionGroupError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+            # Groups replace the old protein/extras lists so nothing shows twice.
+            payload["protein_options"] = []
+            payload["extras_options"] = []
         return payload
 
     @staticmethod
