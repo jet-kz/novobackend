@@ -42,14 +42,14 @@ def _send_one(sub: dict, payload: str) -> int:
         return 0
 
 
-async def send_push(subscriptions: list, title: str, body: str, url: str = "/", tag: str | None = None) -> list:
+async def send_push(subscriptions: list, title: str, body: str, url: str = "/", tag: str | None = None, kind: str = "info") -> list:
     """
     Send to each subscription (objects with endpoint/p256dh/auth). Returns the ones that are gone
     and should be deleted.
     """
     if not push_enabled() or not subscriptions:
         return []
-    payload = json.dumps({"title": title, "body": body, "url": url, "tag": tag})
+    payload = json.dumps({"title": title, "body": body, "url": url, "tag": tag, "kind": kind})
     results = await asyncio.gather(*[
         asyncio.to_thread(_send_one, {"endpoint": s.endpoint, "keys": {"p256dh": s.p256dh, "auth": s.auth}}, payload)
         for s in subscriptions

@@ -78,6 +78,10 @@ class StoreService:
         db.add(store)
         await db.commit()
         await db.refresh(store)
+        if not store.is_verified:
+            from app.modules.notifications import service as notify
+
+            notify.store_awaiting_approval(store.id, store.name)
         return store
 
     @staticmethod

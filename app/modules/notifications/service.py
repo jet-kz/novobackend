@@ -113,7 +113,7 @@ async def alert(
         by_url.setdefault(target, []).append(sub)
     gone = []
     for target, group in by_url.items():
-        gone += await send_push(group, title, body, target, tag)
+        gone += await send_push(group, title, body, target, tag, kind)
     for sub in gone:
         await db.delete(sub)
     if gone:
@@ -144,6 +144,7 @@ async def _alert_merchant_new_order(db, order, merchant) -> None:
         body=f"{order.customer_name or 'A customer'} placed order {order.id} ({pay}). Tap to accept.",
         url="/merchant/orders",
         user_ids=[merchant.owner_id],
+        kind="new_order",
         tag=f"order-{order.id}",
     )
 
@@ -200,9 +201,46 @@ async def _order_context(db, order_id: str):
 
 # ── Account ──────────────────────────────────────────────────────────────────
 
+async def _admin_ids(db) -> list[str]:
+    from app.modules.auth.models import Role, UserRole
+
+    rows = await db.execute(
+        select(UserRole.user_id).join(Role, Role.id == UserRole.role_id).where(Role.name.in_(["admin", "super_admin"]))
+    )
+    return list(dict.fromkeys(rows.scalars().all()))
+
+
+async def _alert_admins(db, *, title: str, body: str, url: str, tag: str | None = None) -> None:
+    """Something in the admin console needs a person (new rider, store to approve, failed delivery)."""
+    ids = await _admin_ids(db)
+    if ids:
+        await alert(db, title=title, body=body, url=url, user_ids=ids, kind="admin", tag=tag)
+
+
 @_guarded
 async def welcome(db, user_id: str, role: str) -> None:
     await _send_to_user(db, user_id, lambda name: templates.welcome(name, role))
+    if role == "rider":
+        await _alert_admins(
+            db, title="New rider application", body="A rider just signed up and is waiting for review.",
+            url="/admin/riders", tag=f"rider-{user_id}",
+        )
+
+
+@_guarded
+async def rider_ready_for_review(db, rider_id: str) -> None:
+    await _alert_admins(
+        db, title="Rider ID uploaded", body="A rider added their ID and is ready for review.",
+        url="/admin/riders", tag=f"rider-{rider_id}",
+    )
+
+
+@_guarded
+async def store_awaiting_approval(db, store_id, store_name: str) -> None:
+    await _alert_admins(
+        db, title="New store to approve", body=f"{store_name} was just created and needs approval before customers can see it.",
+        url="/admin/stores", tag=f"store-{store_id}",
+    )
 
 
 @_guarded
@@ -262,6 +300,11 @@ async def order_status_changed(db, order_id: str, new_status: str, reason: str |
         )
     if new_status == "READY_FOR_PICKUP":
         await _alert_riders_new_job(db, order, store)
+    if new_status == "FAILED":
+        await _alert_admins(
+            db, title="Delivery failed", body=f"Order {order.id} from {store_name} couldn't be delivered.{(' ' + reason) if reason else ''}",
+            url=f"/admin/orders?view=all&order={order.id}", tag=f"order-{order.id}",
+        )
     if new_status == "CANCELLED" and by_customer and merchant:
         await alert(
             db, title="Order cancelled", body=f"The customer cancelled order {order.id}. Don't prepare it.",

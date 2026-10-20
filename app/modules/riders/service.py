@@ -105,8 +105,13 @@ class RiderService:
             rider.id_document_url, changed = (path or None), True
         if changed and rider.approval_status == "rejected":
             rider.approval_status = "pending"
+        uploaded_id = "id_document_path" in data and bool(rider.id_document_url)
         await db.commit()
         await db.refresh(rider)
+        if uploaded_id and rider.approval_status == "pending":
+            from app.modules.notifications import service as notify
+
+            notify.rider_ready_for_review(rider.id)
         return rider
 
     @staticmethod
