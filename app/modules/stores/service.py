@@ -27,11 +27,12 @@ class StoreService:
 
     @staticmethod
     async def get_by_id(db: AsyncSession, store_id: str):
+        """By id, or by slug (share links look like /s/mama-put-kitchen-a1b2c3)."""
         try:
-            sid = uuid.UUID(str(store_id))
+            match = Store.id == uuid.UUID(str(store_id))
         except ValueError:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
-        result = await db.execute(select(Store).where(Store.id == sid, Store.is_deleted == False))
+            match = Store.slug == str(store_id).strip().lower()[:120]
+        result = await db.execute(select(Store).where(match, Store.is_deleted == False))
         store = result.scalar_one_or_none()
         if not store:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")

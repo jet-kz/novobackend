@@ -44,6 +44,25 @@ async def calculate_pricing(
         )
 
 
+@router.get("/delivery-rule")
+async def delivery_rule(db: AsyncSession = Depends(get_db)):
+    """
+    The live delivery-fee rule, so apps show the same fee checkout will charge:
+    fee = clamp(base_fee + distance_km * per_km_fee, minimum_fee, maximum_fee) * surge_multiplier.
+    """
+    res = await db.execute(select(DeliveryPricingRule).where(DeliveryPricingRule.is_active == True).limit(1))
+    rule = res.scalar_one_or_none()
+    return {"success": True, "data": {
+        "base_fee": rule.base_fee if rule else 500.0,
+        "per_km_fee": rule.per_km_fee if rule else 150.0,
+        "minimum_fee": rule.minimum_fee if rule else 500.0,
+        "maximum_fee": rule.maximum_fee if rule else 3000.0,
+        "surge_multiplier": rule.surge_multiplier if rule else 1.0,
+        "default_distance_km": 3.0,
+        "max_distance_km": 50.0,
+    }}
+
+
 @router.post("/validate-promo", response_model=ValidatePromoResponse)
 async def validate_promo_code(
     req: ValidatePromoRequest,
