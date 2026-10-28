@@ -144,10 +144,26 @@ def welcome(name: str | None, role: str) -> Email:
 
 # ── Orders ───────────────────────────────────────────────────────────────────
 
+def _choices(item: dict) -> str:
+    """'Protein: Beef · Extras: 2× Plantain' plus the customer's note, for under an item line."""
+    groups: dict[str, list[str]] = {}
+    for a in item.get("addons") or []:
+        if not isinstance(a, dict):
+            continue
+        qty = int(a.get("quantity") or 1)
+        label = (f"{qty}× " if qty > 1 else "") + str(a.get("name") or "")
+        groups.setdefault(str(a.get("group") or "Extras"), []).append(label)
+    parts = [f"{escape(g)}: {escape(', '.join(v))}" for g, v in groups.items()]
+    out = f'<div style="color:{MUTED};font-size:13px">{" &middot; ".join(parts)}</div>' if parts else ""
+    if item.get("note"):
+        out += f'<div style="color:#B45309;font-size:13px">Note: {escape(str(item["note"]))}</div>'
+    return out
+
+
 def _items_table(items: list[dict]) -> str:
     rows = "".join(
-        f'<tr><td style="padding:6px 0">{int(i.get("quantity") or 1)}&times; {escape(str(i.get("name") or "Item"))}</td>'
-        f'<td align="right" style="padding:6px 0">{_naira(i.get("total"))}</td></tr>'
+        f'<tr><td style="padding:6px 0">{int(i.get("quantity") or 1)}&times; {escape(str(i.get("name") or "Item"))}{_choices(i)}</td>'
+        f'<td align="right" valign="top" style="padding:6px 0">{_naira(i.get("total"))}</td></tr>'
         for i in items
     )
     return f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;margin:12px 0">{rows}</table>'
@@ -206,7 +222,8 @@ def merchant_new_order(store_name: str, order: dict, items: list[dict]) -> Email
     html = _layout(
         f"New order for {store_name}",
         f"<p>You have a new order waiting for confirmation.</p>{_items_table(items)}{_totals(order)}"
-        f"<p style='color:{MUTED};margin-top:14px'>Order {escape(oid)} &middot; {escape(pay)}<br>"
+        + (f"<p style='background:#FEF3C7;padding:10px 12px;border-radius:10px'><strong>Customer note:</strong> {escape(order['customer_note'])}</p>" if order.get("customer_note") else "")
+        + f"<p style='color:{MUTED};margin-top:14px'>Order {escape(oid)} &middot; {escape(pay)}<br>"
         f"Customer: {escape(order.get('customer_name') or 'Customer')}</p>",
         ("Open orders", _url("/merchant/orders")),
     )

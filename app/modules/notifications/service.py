@@ -195,7 +195,10 @@ async def _order_context(db, order_id: str):
         "delivery_address": order.delivery_address,
         "customer_name": order.customer_name,
     }
-    item_rows = [{"name": i.name, "quantity": i.quantity, "total": (i.price or 0) * (i.quantity or 1)} for i in items]
+    item_rows = [
+        {"name": i.name, "quantity": i.quantity, "total": (i.price or 0) * (i.quantity or 1), "addons": i.addons or [], "note": i.note}
+        for i in items
+    ]
     return order, order_dict, store, merchant, item_rows
 
 

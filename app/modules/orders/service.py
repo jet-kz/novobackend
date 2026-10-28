@@ -140,12 +140,14 @@ def price_order_items(raw_items: list, products_by_id: dict, store_id) -> tuple[
 
         unit_price = round(float(product.price or 0) + addon_total, 2)
         subtotal += unit_price * quantity
+        note = " ".join(str(raw.get("note") or raw.get("special_instructions") or raw.get("specialInstructions") or "").split())[:300]
         priced.append({
             "product_id": pid,
             "name": product.name,
             "price": unit_price,
             "quantity": quantity,
             "addons": to_jsonable(addons_out) if addons_out else None,
+            "note": note or None,
         })
     return priced, round(subtotal, 2)
 
@@ -552,6 +554,7 @@ class OrderService:
             delivery_latitude=lat,
             delivery_longitude=lon,
             delivery_address=address[:255],
+            customer_note=(" ".join(str(payload.get("customer_note") or payload.get("notes") or "").split())[:500] or None),
         )
         db.add(order)
         await db.flush()

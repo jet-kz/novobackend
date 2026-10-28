@@ -30,6 +30,8 @@ class Order(Base):
     delivery_longitude = Column(Float, nullable=False)
     delivery_latitude = Column(Float, nullable=False)
     delivery_address = Column(String, nullable=False)
+    # Customer's note for the store/rider, e.g. "call when you get to the gate".
+    customer_note = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -46,6 +48,8 @@ class OrderItem(Base):
     price = Column(Float, nullable=False)
     quantity = Column(Integer, nullable=False)
     addons = Column(JSONB, nullable=True)
+    # Customer's note for this item, e.g. "no onions, extra pepper".
+    note = Column(String(300), nullable=True)
 
     order = relationship("Order", back_populates="items")
 

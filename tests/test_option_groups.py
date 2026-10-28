@@ -98,6 +98,29 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(subtotal, 5400)
 
 
+class NotesTests(unittest.TestCase):
+    def test_item_note_kept_trimmed(self):
+        p = product([PROTEIN])
+        items, _ = price_order_items(
+            [{"product_id": str(p.id), "addons": [{"id": "beef"}], "note": "  no   onions\n please "}], {p.id: p}, STORE
+        )
+        self.assertEqual(items[0]["note"], "no onions please")
+        items, _ = price_order_items([{"product_id": str(p.id), "addons": [{"id": "beef"}]}], {p.id: p}, STORE)
+        self.assertIsNone(items[0]["note"])
+
+    def test_merchant_email_shows_choices_and_notes(self):
+        from app.modules.notifications.templates import merchant_new_order
+
+        _, html, _ = merchant_new_order(
+            "Mama Put",
+            {"id": "ORD-1", "total": 4000, "subtotal": 3500, "delivery_fee": 500, "payment_method": "cash", "customer_note": "Call at the gate"},
+            [{"name": "Jollof", "quantity": 1, "total": 3500, "note": "No onions",
+              "addons": [{"name": "Beef", "group": "Protein", "quantity": 1}, {"name": "Plantain", "group": "Extras", "quantity": 2}]}],
+        )
+        for text in ("Protein: Beef", "2× Plantain", "No onions", "Call at the gate"):
+            self.assertIn(text, html)
+
+
 class DeliveryCodeTests(unittest.TestCase):
     def test_stable_four_digits_and_distinct_from_pickup(self):
         code = delivery_code_for("ORD-1")
