@@ -98,6 +98,23 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(subtotal, 5400)
 
 
+class AnyAmountTests(unittest.TestCase):
+    def test_many_drinks_and_extra_meat(self):
+        drinks = normalize_option_groups([{"name": "Drinks", "min": 0, "max": 100, "options": [
+            {"name": "Coke", "price": 500, "max_qty": 10}, {"name": "Water", "price": 200, "max_qty": 10}, {"name": "Malt", "price": 600, "max_qty": 10},
+        ]}])[0]
+        self.assertEqual(drinks["max"], 30)  # every drink, up to 10 of each
+        p = product([PROTEIN, drinks])
+        ids = {o["name"]: o["id"] for o in drinks["options"]}
+        addons, total = price_selection(p, [{"id": "beef"}, {"id": ids["Coke"], "quantity": 3}, {"id": ids["Water"], "quantity": 2}, {"id": ids["Malt"]}])
+        self.assertEqual(total, 500 + 1500 + 400 + 600)
+
+    def test_legacy_extras_can_be_added_more_than_once(self):
+        p = product(extras=[{"id": "e1", "name": "Plantain", "price": 300}])
+        addons, total = price_selection(p, [{"id": "e1", "quantity": 3}])
+        self.assertEqual(total, 900)
+
+
 class NotesTests(unittest.TestCase):
     def test_item_note_kept_trimmed(self):
         p = product([PROTEIN])

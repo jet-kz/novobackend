@@ -20,8 +20,8 @@ from typing import Optional
 
 MAX_GROUPS = 12
 MAX_OPTIONS_PER_GROUP = 40
-MAX_OPTION_QTY = 10
-MAX_GROUP_PICKS = 50
+MAX_OPTION_QTY = 20
+MAX_GROUP_PICKS = 100
 
 
 class OptionGroupError(ValueError):
@@ -106,7 +106,8 @@ def _legacy_group(group_id: str, name: str, items, required_single: bool) -> Opt
                 "name": str(raw["name"]),
                 "price": float(raw.get("price") or 0),
                 "available": raw.get("available", True) is not False,
-                "max_qty": 1,
+                # Old "extras" lists: let customers add each one a few times.
+                "max_qty": 1 if required_single else 5,
             }
             if raw.get("image"):
                 opt["image"] = raw["image"]
@@ -115,7 +116,7 @@ def _legacy_group(group_id: str, name: str, items, required_single: bool) -> Opt
         return None
     if required_single:
         return {"id": group_id, "name": name, "min": 1, "max": 1, "options": options}
-    return {"id": group_id, "name": name, "min": 0, "max": len(options), "options": options}
+    return {"id": group_id, "name": name, "min": 0, "max": sum(o["max_qty"] for o in options), "options": options}
 
 
 def effective_option_groups(product) -> list[dict]:
