@@ -312,8 +312,9 @@ class OrderService:
                     stmt = stmt.where(Order.store_id == target)
                 else:
                     stmt = stmt.where(Order.store_id.in_(owned))
-                # Card orders reach the kitchen only once Paystack confirms payment.
-                stmt = stmt.where((Order.payment_method != "card") | (Order.payment_status == "paid"))
+                # Card orders reach the kitchen only once payment is confirmed (refunded ones stay in history).
+                stmt = stmt.where((Order.payment_method != "card") | (Order.payment_status.in_(
+                    ("paid", "refund_pending", "refunded", "partially_refunded"))))
             elif is_rider(current_user):
                 assigned = select(Delivery.order_id).where(Delivery.rider_id == user_id)
                 taken = select(Delivery.order_id).where(
@@ -742,6 +743,12 @@ class OrderService:
         ))
         await db.commit()
         notify.order_status_changed(order.id, target, payload.get("reason") or None)
+        # Cancelled -> refund straight away. A failed delivery waits for an admin: the food was made and
+        # left with a rider, so someone checks what happened (and who pays) before money goes back.
+        if target == CANCELLED and order.payment_status == "paid":
+            from app.modules.payments.refunds import cancel_reason_code, schedule_auto_refund
+
+            schedule_auto_refund(order.id, cancel_reason_code(role, target))
         if target == RIDER_ASSIGNED and delivery:
             notify.rider_assigned(order.id, uid, delivery.rider_earnings)
         return await OrderService.get_by_id(db, order.id, current_user)
@@ -805,4 +812,9 @@ class OrderService:
         ))
         await db.commit()
         notify.order_status_changed(order.id, CANCELLED, reason, by_customer=order.customer_id == current_user["user_id"])
+        if order.payment_status == "paid":
+            from app.modules.payments.refunds import cancel_reason_code, schedule_auto_refund
+
+            by_customer = order.customer_id == current_user["user_id"]
+            schedule_auto_refund(order.id, cancel_reason_code(None if by_customer else "admin", CANCELLED))
         return await OrderService.get_by_id(db, order.id, current_user)

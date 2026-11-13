@@ -149,12 +149,42 @@ class PaymentService:
         Idempotently mark an order paid. Every provider (Paystack, Bachs) ends here.
         Callers must already have checked amount and currency against the order.
         """
+        from app.modules.payments.refunds import schedule_auto_refund
+
         result = {"verified": True, "status": "success", "reference": reference, "order_id": order.id, "amount": amount}
-        existing = await db.execute(select(PaymentTransaction).where(PaymentTransaction.provider_reference == reference))
-        if existing.scalar_one_or_none() or order.payment_status == "paid":
+        metadata = dict(provider_metadata or {})
+        existing = (await db.execute(select(PaymentTransaction).where(PaymentTransaction.provider_reference == reference))).scalar_one_or_none()
+        if existing and existing.status == "underpaid":
+            # A short payment that the customer has since topped up: drop the short record, record it in full below.
+            await db.delete(existing)
+            await db.flush()
+        elif existing:
             return {**result, "already_recorded": True}
 
         payment = await PaymentService._get_or_create_payment(db, order)
+        prior = (await db.execute(select(PaymentTransaction).where(
+            PaymentTransaction.payment_id == payment.id, PaymentTransaction.txn_type == "charge",
+            PaymentTransaction.status == "success",
+        ))).scalars().all()
+        if prior or order.payment_status in ("paid", "refund_pending", "refunded", "partially_refunded"):
+            # The order is already paid. The same payment reported twice (webhook and return page) has the
+            # same checkout; a different checkout means the customer really paid twice -> refund the extra.
+            checkout_id = metadata.get("checkout_id")
+            seen = {(t.provider_metadata or {}).get("checkout_id") for t in prior if isinstance(t.provider_metadata, dict)}
+            if provider == "bachs" and checkout_id and prior and checkout_id not in seen:
+                db.add(PaymentTransaction(
+                    payment_id=payment.id, txn_type="charge", provider=provider, provider_reference=reference,
+                    amount=amount, currency=currency, status="duplicate", provider_metadata=metadata,
+                ))
+                await db.commit()
+                logger.warning("Second payment for %s (%s); refunding it", order.id, reference)
+                schedule_auto_refund(order.id, "duplicate_payment", reference=reference)
+                return {**result, "duplicate": True}
+            return {**result, "already_recorded": True}
+
+        total = float(order.total or 0)
+        if amount > total + 0.005:
+            metadata["overpaid_by"] = round(amount - total, 2)
         payment.status = "paid"
         db.add(PaymentTransaction(
             payment_id=payment.id,
@@ -164,9 +194,14 @@ class PaymentService:
             amount=amount,
             currency=currency,
             status="success",
-            provider_metadata=provider_metadata,
+            provider_metadata=metadata,
         ))
         order.payment_status = "paid"
+        if order.status in ("CANCELLED", "FAILED"):
+            # Paid after the order was cancelled (e.g. checkout left open): give it straight back.
+            await db.commit()
+            schedule_auto_refund(order.id, "late_payment")
+            return {**result, "late_payment": True}
 
         from app.modules.pricing.models import PricingSnapshot
         from app.modules.payments.ledger import LedgerService
@@ -244,40 +279,37 @@ class PaymentService:
         return payment
 
     @staticmethod
-    async def request_refund(db: AsyncSession, payment_id: str, data: dict, current_user: dict):
-        payment = await PaymentService._owned_payment(db, payment_id, current_user)
-        if payment.status != "paid":
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Payment must be in paid status to request refund")
-        try:
-            amount = float((data or {}).get("amount") or payment.amount)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid refund amount")
-        if amount <= 0 or amount > float(payment.amount):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Refund amount must be between 0 and the amount paid")
-        refund = Refund(
-            payment_id=payment.id,
-            amount=round(amount, 2),
-            currency=payment.currency,
-            reason=str((data or {}).get("reason") or "")[:500] or None,
-        )
-        db.add(refund)
-        await db.commit()
-        await db.refresh(refund)
-        return refund
-
-    @staticmethod
     async def get_refunds(db: AsyncSession, payment_id: str, current_user: dict):
         payment = await PaymentService._owned_payment(db, payment_id, current_user)
         result = await db.execute(select(Refund).where(Refund.payment_id == payment.id))
         return result.scalars().all()
 
     @staticmethod
-    async def process_refund(db: AsyncSession, refund_id: str):
-        result = await db.execute(select(Refund).where(Refund.id == to_uuid(refund_id, "refund_id")))
-        refund = result.scalar_one_or_none()
-        if not refund:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Refund not found")
-        refund.status = "processed"
+    async def apply_bachs_short_payment(db: AsyncSession, data: dict) -> None:
+        """
+        `collection.underpaid`: the customer sent less than the order total. The order stays unpaid;
+        we keep a record of the money so it shows in the admin refunds queue. If the customer tops
+        it up, the later `collection.succeeded` for the same charge replaces this record.
+        """
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        order = await db.get(Order, metadata.get("order_id")) if metadata.get("order_id") else None
+        reference = str(data.get("charge_id") or data.get("payment_id") or data.get("checkout_id") or "")
+        if not order or not reference:
+            return
+        reference = f"bachs:{reference}"
+        if (await db.execute(select(PaymentTransaction.id).where(PaymentTransaction.provider_reference == reference))).first():
+            return
+        try:
+            amount = float(data.get("amount") or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        if amount <= 0:
+            return
+        payment = await PaymentService._get_or_create_payment(db, order)
+        db.add(PaymentTransaction(
+            payment_id=payment.id, txn_type="charge", provider="bachs", provider_reference=reference, amount=amount,
+            currency=str(data.get("currency") or order.currency or "NGN").upper(), status="underpaid",
+            provider_metadata={k: data.get(k) for k in ("checkout_id", "charge_id", "settlement_amount", "settlement_currency")},
+        ))
         await db.commit()
-        await db.refresh(refund)
-        return refund
+        notify.short_payment(order.id, amount, order.total)

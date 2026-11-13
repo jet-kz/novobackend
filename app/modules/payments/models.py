@@ -41,9 +41,22 @@ class Refund(Base):
     payment_id = Column(UUID(as_uuid=True), ForeignKey("payments.id", ondelete="CASCADE"), nullable=False)
     amount = Column(Float, nullable=False)
     currency = Column(String(10), nullable=False)
-    status = Column(String(50), nullable=False, default="requested")  # 'requested', 'processed', 'failed'
+    # 'processing' (sent to Bachs), 'succeeded', 'failed' (retry or pay manually). Legacy rows: 'requested'.
+    status = Column(String(50), nullable=False, default="processing")
     reason = Column(String, nullable=True)
+    order_id = Column(String(50), nullable=True, index=True)
+    # The charge this refund returns money from: PaymentTransaction.provider_reference.
+    charge_reference = Column(String(255), nullable=True, index=True)
+    method = Column(String(20), nullable=True)  # 'bachs' (API) or 'manual' (bank transfer, recorded by an admin)
+    provider_refund_id = Column(String(255), nullable=True, index=True)
+    reference = Column(String(128), nullable=True, unique=True)  # ours, sent to Bachs; manual: the bank reference
+    bearer = Column(String(20), nullable=True)  # who absorbs it: 'platform', 'merchant' or 'rider'
+    reason_code = Column(String(40), nullable=True)
+    failure_reason = Column(String(500), nullable=True)
+    created_by = Column(String(255), nullable=True)  # admin user id, or 'system' for automatic refunds
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
 
     payment = relationship("Payment", back_populates="refunds")
 

@@ -305,7 +305,8 @@ async def order_status_changed(db, order_id: str, new_status: str, reason: str |
         await _alert_riders_new_job(db, order, store)
     if new_status == "FAILED":
         await _alert_admins(
-            db, title="Delivery failed", body=f"Order {order.id} from {store_name} couldn't be delivered.{(' ' + reason) if reason else ''}",
+            db, title="Delivery failed", body=f"Order {order.id} from {store_name} couldn't be delivered.{(' ' + reason) if reason else ''}"
+            + (" It was paid online: check what happened, then refund it." if order.payment_status == "paid" and order.payment_method == "card" else ""),
             url=f"/admin/orders?view=all&order={order.id}", tag=f"order-{order.id}",
         )
     if new_status == "CANCELLED" and by_customer and merchant:
@@ -439,3 +440,36 @@ async def withdrawal_finished(db, user_id: str, amount, ok: bool, reason: str | 
         url="/", user_ids=[user_id], kind="payout",
     )
     await _send_to_user(db, user_id, lambda name: templates.withdrawal_finished(name, amount, ok, reason))
+
+
+# ── Refunds ──────────────────────────────────────────────────────────────────
+
+@_guarded
+async def refund_started(db, order_id: str, amount, method: str) -> None:
+    from app.modules.orders.models import Order
+
+    order = await db.get(Order, order_id)
+    if not order:
+        return
+    await alert(
+        db, title="Refund on its way", body=f"We've refunded ₦{float(amount):,.2f} for order {order.id}.",
+        url=_customer_url(order), user_ids=[order.customer_id], guest_order_id=order.id, tag=f"refund-{order.id}",
+    )
+    await _send_to_customer(db, order, lambda name: templates.refund_started(name, order.id, amount, method))
+
+
+@_guarded
+async def refund_problem(db, order_id: str, amount, reason: str | None) -> None:
+    await _alert_admins(
+        db, title="Refund needs you", body=f"Couldn't refund ₦{float(amount):,.2f} on order {order_id}. {reason or ''}".strip(),
+        url=f"/admin/orders?view=refunds&order={order_id}", tag=f"refund-{order_id}",
+    )
+
+
+@_guarded
+async def short_payment(db, order_id: str, amount, total) -> None:
+    await _alert_admins(
+        db, title="Short payment", body=f"Order {order_id}: customer paid ₦{float(amount):,.2f} of ₦{float(total or 0):,.2f}. "
+        "The order isn't paid yet; refund it or wait for the rest.",
+        url=f"/admin/orders?view=refunds&order={order_id}", tag=f"refund-{order_id}",
+    )

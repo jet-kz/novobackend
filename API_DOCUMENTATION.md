@@ -380,9 +380,9 @@ Below is a complete description of all routers registered under `/api/v1/`:
 - `GET /api/v1/payments/{order_id}` — Retrieve transaction status matching order.
 - `POST /api/v1/payments` — Initialize gateway intents (Paystack/Stripe/Flutterwave).
 - `POST /api/v1/payments/{payment_id}/transactions` — Log transaction responses from webhooks.
-- `POST /api/v1/payments/{payment_id}/refunds` — Initialize core order refund workflow.
-- `GET /api/v1/payments/{payment_id}/refunds` — List refunds logged for a specific payment.
-- `PATCH /api/v1/payments/{payment_id}/refunds/{refund_id}/process` — Admin execution check of refund status.
+- `GET /api/v1/payments/{payment_id}/refunds` — List refunds on one of the caller's payments.
+- `POST /api/v1/admin/orders/{order_id}/refund` — Admin: refund through Bachs or record a bank-transfer refund (full or partial, with who pays). See `app/modules/payments/refunds.py`.
+- Refunds run automatically when a paid order is cancelled, and for second payments on the same order. Failed deliveries wait for an admin to refund.
 
 ### Ledger Wallets (`/api/v1/wallets`)
 - `GET /api/v1/wallets` — Retrieve list of wallets matching distinct user currencies.

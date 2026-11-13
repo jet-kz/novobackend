@@ -12,6 +12,7 @@ from app.modules.auth.models import Role, UserRole
 from app.modules.merchants.models import Merchant
 from app.modules.orders.models import Order, OrderStatusHistory
 from app.modules.payments.models import Payment, PaymentTransaction, Refund
+from app.modules.payments.refunds import RefundService
 from app.modules.riders.models import RiderProfile
 from app.modules.stores.models import Store
 from app.modules.users.models import UserProfile
@@ -72,9 +73,7 @@ class AdminService:
         stuck_ready = await scalar(select(func.count()).select_from(Order).where(
             Order.status == "READY_FOR_PICKUP", Order.updated_at < now - timedelta(minutes=STUCK_READY_MINUTES)
         ))
-        needs_refund = await scalar(select(func.count()).select_from(Order).where(
-            Order.status.in_(("CANCELLED", "FAILED")), Order.payment_status == "paid"
-        ))
+        needs_refund = await scalar(select(func.count()).select_from(Order).where(RefundService.needs_refund_clause()))
         pending_riders = await scalar(select(func.count()).select_from(RiderProfile).where(
             RiderProfile.approval_status == "pending", RiderProfile.is_deleted == False
         ))
@@ -278,7 +277,7 @@ class AdminService:
         elif view == "cancelled":
             filters.append(Order.status.in_(("CANCELLED", "FAILED")))
         elif view == "refunds":
-            filters.append(and_(Order.status.in_(("CANCELLED", "FAILED")), Order.payment_status.in_(("paid", "refunded"))))
+            filters.append(RefundService.has_refund_activity_clause())
         if q:
             like = f"%{q.strip()}%"
             filters.append(or_(Order.id.ilike(like), Order.customer_name.ilike(like), Order.customer_phone.ilike(like),
@@ -287,8 +286,13 @@ class AdminService:
         total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar() or 0
         rows = (await db.execute(stmt.order_by(Order.created_at.desc()).limit(min(limit, 200)).offset(offset))).scalars().all()
         items = await OrderService._decorate(db, rows, include_pickup_code=True)
+        owed = set()
+        if rows:
+            owed = set((await db.execute(select(Order.id).where(
+                Order.id.in_([o.id for o in rows]), RefundService.needs_refund_clause()
+            ))).scalars().all())
         for item, o in zip(items, rows):
-            item["needs_refund"] = o.status in ("CANCELLED", "FAILED") and o.payment_status == "paid"
+            item["needs_refund"] = o.id in owed
             item["stuck"] = (o.status == "PENDING" and o.created_at and o.created_at < now - timedelta(minutes=STUCK_NEW_MINUTES)) or (
                 o.status == "READY_FOR_PICKUP" and o.updated_at and o.updated_at < now - timedelta(minutes=STUCK_READY_MINUTES))
         return {"total": total, "items": items}
@@ -303,11 +307,12 @@ class AdminService:
             select(OrderStatusHistory).where(OrderStatusHistory.order_id == order_id).order_by(OrderStatusHistory.created_at)
         )).scalars().all()
         payments = (await db.execute(select(Payment).where(Payment.order_id == order_id))).scalars().all()
-        txns, refunds = [], []
+        txns = []
         if payments:
             ids = [p.id for p in payments]
             txns = (await db.execute(select(PaymentTransaction).where(PaymentTransaction.payment_id.in_(ids)))).scalars().all()
-            refunds = (await db.execute(select(Refund).where(Refund.payment_id.in_(ids)))).scalars().all()
+        refunds = await RefundService._refunds(db, order_id)
+        money = await RefundService.summary(db, order)
         changers = {h.changed_by_id for h in history}
         emails = {}
         if changers:
@@ -315,31 +320,56 @@ class AdminService:
             emails = dict(rows)
         return {
             **data,
-            "needs_refund": order.status in ("CANCELLED", "FAILED") and order.payment_status == "paid",
+            "needs_refund": bool(money["attention"]),
+            "refund_summary": money,
             "history": [{**model_to_dict(h), "changed_by_email": emails.get(h.changed_by_id)} for h in history],
             "transactions": [model_to_dict(t) for t in txns],
             "refunds": [model_to_dict(r) for r in refunds],
         }
 
     @staticmethod
-    async def record_refund(db: AsyncSession, order_id: str, reference: str, note: Optional[str], actor: dict) -> dict:
-        """Mark a cancelled, paid order as refunded (refund done in the Bachs dashboard or by transfer)."""
+    async def refund(db: AsyncSession, order_id: str, data: dict, actor: dict) -> dict:
+        """
+        Refund an order (validated by the router). data:
+          method: 'bachs' (send the money back through Bachs) or 'manual' (already sent by bank transfer)
+          charge_reference: which payment to refund (defaults to the order's payment)
+          amount: None for the full amount
+          reason: one of REASONS; note: free text
+          bearer: who absorbs it - 'platform' (Novo), 'merchant' or 'rider'
+          reference: the bank reference (manual only)
+        """
         from app.core.audit import record
-        from app.modules.payments.service import PaymentService
 
         order = await db.get(Order, order_id)
         if not order:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-        if order.status not in ("CANCELLED", "FAILED") or order.payment_status != "paid":
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only paid orders that were cancelled can be refunded")
-        payment = await PaymentService._get_or_create_payment(db, order)
-        db.add(Refund(payment_id=payment.id, amount=float(order.total), currency=order.currency or "NGN", status="processed",
-                      reason=f"{reference.strip()}{' — ' + note.strip() if note else ''}"[:500] or None))
-        payment.status = "refunded"
-        order.payment_status = "refunded"
-        record(db, actor, "order.refund", "order", order_id, {"reference": reference, "note": note, "amount": order.total})
+        common = dict(amount=data.get("amount"), reason_code=data["reason"], note=data.get("note"),
+                      bearer=data["bearer"], actor_id=actor["user_id"])
+        if data["method"] == "manual":
+            refund = await RefundService.record_manual(
+                db, order, reference=data["reference"], charge_reference=data.get("charge_reference"), **common,
+            )
+        else:
+            charges = await RefundService._charges(db, order.id)
+            ref = data.get("charge_reference")
+            if ref:
+                txn = next((c for c in charges if c.provider_reference == ref), None)
+            else:
+                txn = next((c for c in charges if c.status == "success"), None) or (charges[0] if charges else None)
+            if not txn:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="No online payment on this order to refund. If you sent money by transfer, record it as a manual refund.",
+                )
+            refund = await RefundService.refund_charge(db, order, txn, **common)
+        record(db, actor, "order.refund", "order", order_id, {
+            "method": data["method"], "amount": refund.amount, "status": refund.status, "bearer": refund.bearer,
+            "reason": refund.reason_code, "reference": refund.reference,
+        })
         await db.commit()
-        return await AdminService.order_detail(db, order_id)
+        detail = await AdminService.order_detail(db, order_id)
+        detail["last_refund"] = model_to_dict(refund)
+        return detail
 
     # ── Payments ─────────────────────────────────────────────────────────────
 
@@ -354,7 +384,7 @@ class AdminService:
         rows = (await db.execute(stmt.order_by(PaymentTransaction.created_at.desc()).limit(min(limit, 200)).offset(offset))).all()
         collected = (await db.execute(select(func.coalesce(func.sum(PaymentTransaction.amount), 0)).where(
             PaymentTransaction.txn_type == "charge", PaymentTransaction.status == "success"))).scalar() or 0
-        refunded = (await db.execute(select(func.coalesce(func.sum(Refund.amount), 0)).where(Refund.status == "processed"))).scalar() or 0
+        refunded = (await db.execute(select(func.coalesce(func.sum(Refund.amount), 0)).where(Refund.status == "succeeded"))).scalar() or 0
         cod = (await db.execute(select(func.coalesce(func.sum(Order.total), 0)).where(
             Order.status == "DELIVERED", Order.payment_method.in_(("cash", "transfer"))))).scalar() or 0
         return {

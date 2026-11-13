@@ -96,13 +96,49 @@ async def order_detail(order_id: str = Path(...), db: AsyncSession = Depends(get
 
 
 @router.post("/orders/{order_id}/refund")
-async def record_refund(order_id: str = Path(...), payload: dict = Body(...), db: AsyncSession = Depends(get_db), actor: dict = Depends(admin_only)):
-    """Record that a cancelled, paid order was refunded. Body: {reference, note?}."""
-    reference = str(payload.get("reference") or "").strip()
-    if not reference:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Add the refund reference (from Bachs or your bank)")
-    data = await AdminService.record_refund(db, order_id, reference, payload.get("note"), actor)
-    return {"success": True, "message": "Refund recorded", "data": data}
+async def refund_order(order_id: str = Path(...), payload: dict = Body(...), db: AsyncSession = Depends(get_db), actor: dict = Depends(admin_only)):
+    """
+    Refund an order, full or partial. Body: {method: 'bachs'|'manual', reason, bearer: 'platform'|'merchant'|'rider',
+    amount?, charge_reference?, note?, reference (manual only)}. Sending only {reference, note?} records a full manual refund.
+    """
+    from app.modules.payments.refunds import BEARERS, REASONS
+
+    data = dict(payload or {})
+    reference = str(data.get("reference") or "").strip()
+    method = data.get("method") or ("manual" if reference else "")
+    if method not in ("bachs", "manual"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose how to refund: through Bachs, or record a bank transfer you made")
+    if method == "manual" and not reference:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Add the refund reference (from your bank)")
+    data["method"], data["reference"] = method, reference
+    data["reason"] = data.get("reason") or "other"
+    data["bearer"] = data.get("bearer") or "platform"
+    if data["reason"] not in REASONS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown refund reason")
+    if data["bearer"] not in BEARERS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Who pays must be Novo, the merchant or the rider")
+    if data.get("amount") not in (None, ""):
+        try:
+            data["amount"] = float(data["amount"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Amount must be a number")
+    else:
+        data["amount"] = None
+    result = await AdminService.refund(db, order_id, data, actor)
+    last = result["last_refund"]
+    ok = last["status"] != "failed"
+    return {"success": True, "message": "Refund sent" if ok else (last.get("failure_reason") or "Refund failed"), "data": result}
+
+
+@router.get("/refund-options")
+async def refund_options(_: dict = Depends(admin_only)):
+    """Reasons and who-pays choices for the refund form."""
+    from app.modules.payments.refunds import REASONS
+
+    return {"success": True, "data": {
+        "reasons": [{"value": k, "label": v} for k, v in REASONS.items()],
+        "bearers": [{"value": "platform", "label": "Novo"}, {"value": "merchant", "label": "Merchant"}, {"value": "rider", "label": "Rider"}],
+    }}
 
 
 @router.get("/payments")

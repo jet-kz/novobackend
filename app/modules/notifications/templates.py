@@ -236,8 +236,8 @@ _STATUS_COPY = {
     "CONFIRMED": ("Your order is confirmed", "{store} accepted your order and is getting it ready."),
     "PICKED_UP": ("Your order is on the way", "Your rider has picked up your order from {store} and is heading to you."),
     "DELIVERED": ("Your order was delivered", "Your order from {store} has been delivered. Enjoy, and thanks for ordering with Novo!"),
-    "CANCELLED": ("Your order was cancelled", "Your order from {store} was cancelled.{reason} If you paid by card, your refund will be processed to the original payment method."),
-    "FAILED": ("We couldn't deliver your order", "Your order from {store} couldn't be delivered.{reason} Our support team will reach out to sort it out."),
+    "CANCELLED": ("Your order was cancelled", "Your order from {store} was cancelled.{reason} If you paid online, we're refunding you in full and will email you when it's on its way."),
+    "FAILED": ("We couldn't deliver your order", "Your order from {store} couldn't be delivered.{reason} Our team will look into what happened and contact you about a refund."),
 }
 
 
@@ -264,6 +264,22 @@ def order_status_update(name: str | None, order_id: str, status: str, store_name
         ("View order", _url("/orders")) if show_link else None,
     )
     return subject, html, _text(_greeting(name), "", message, code_txt, f"Order {order_id}")
+
+
+def refund_started(name: str | None, order_id: str, amount, method: str) -> Email:
+    subject = f"Refund of {_naira(amount)} for order {order_id}"
+    if method == "manual":
+        line = f"We've sent you a refund of {_naira(amount)} for order {order_id}. It should already be in your account."
+    else:
+        line = (f"We've refunded {_naira(amount)} for order {order_id} to the card or account you paid with. "
+                "Card refunds usually reach you in 5 to 7 working days, depending on your bank.")
+    html = _layout(
+        "Your refund is on its way",
+        f"<p>{_greeting(name)}</p><p>{escape(line)}</p>"
+        f"<p style='color:{MUTED}'>If it hasn't arrived after 7 working days, reply to this email with your order number.</p>",
+        ("View order", _url("/orders")),
+    )
+    return subject, html, _text(_greeting(name), "", line)
 
 
 def merchant_order_cancelled(store_name: str, order_id: str, reason: str | None) -> Email:

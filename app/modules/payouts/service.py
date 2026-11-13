@@ -77,10 +77,12 @@ class PayoutService:
         cash_collected (riders): cash/transfer-on-delivery money the rider took from customers,
         which belongs to Novo and is netted off what we owe them.
         settled: already sent to their connected account.
-        owed = earned - cash_collected - settled (negative means they owe Novo).
+        refunds: customer refunds an admin charged to them (missing items, wrong order...).
+        owed = earned - cash_collected - refunds - settled (negative means they owe Novo).
         """
         from app.modules.deliveries.models import Delivery
         from app.modules.orders.models import Order
+        from app.modules.payments.models import Refund
         from app.modules.pricing.models import PricingSnapshot
         from app.modules.stores.models import Store
 
@@ -106,17 +108,29 @@ class PayoutService:
             earned = sum(float(e or 0) for e, _, _ in rows)
             cash = sum(float(t or 0) for _, method, t in rows if method in ("cash", "transfer"))
 
+        charged = Refund.status.in_(("processing", "succeeded"))
+        if payee_type == "merchant":
+            refund_q = (select(func.coalesce(func.sum(Refund.amount), 0))
+                        .join(Order, Order.id == Refund.order_id).join(Store, Store.id == Order.store_id)
+                        .where(Store.merchant_id == uuid.UUID(payee_id), Refund.bearer == "merchant", charged))
+        else:
+            refund_q = (select(func.coalesce(func.sum(Refund.amount), 0))
+                        .where(Refund.bearer == "rider", charged, Refund.order_id.in_(
+                            select(Delivery.order_id).where(Delivery.rider_id == payee_id))))
+        refunds = float((await db.execute(refund_q)).scalar() or 0)
+
         settled = (await db.execute(
             select(func.coalesce(func.sum(Settlement.amount), 0)).where(
                 Settlement.payee_type == payee_type, Settlement.payee_id == payee_id,
                 Settlement.status.in_(("processing", "paid")),
             )
         )).scalar() or 0
-        owed = round(earned - cash - float(settled), 2)
+        owed = round(earned - cash - refunds - float(settled), 2)
         return {
             "orders": orders,
             "earned": round(earned, 2),
             "cash_collected": round(cash, 2),
+            "refunds": round(refunds, 2),
             "settled": round(float(settled), 2),
             "owed": owed,
         }

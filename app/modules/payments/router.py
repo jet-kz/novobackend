@@ -123,8 +123,15 @@ async def bachs_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             # Acknowledge so Bachs stops retrying; logged for manual reconciliation.
             logger.warning("Bachs webhook %s not applied: %s", event.get("id"), exc.detail)
             return {"received": True, "applied": False, "reason": exc.detail}
-    if kind in ("collection.underpaid", "collection.failed"):
+    if kind == "collection.underpaid":
+        logger.warning("Bachs underpayment for order %s", (data.get("metadata") or {}).get("order_id"))
+        await PaymentService.apply_bachs_short_payment(db, data)
+    elif kind == "collection.failed":
         logger.warning("Bachs %s for order %s", kind, (data.get("metadata") or {}).get("order_id"))
+    elif kind in ("refund.created", "refund.paid", "refund.failed"):
+        from app.modules.payments.refunds import RefundService
+
+        await RefundService.handle_event(db, kind, data)
     elif kind in ("account.updated", "capability.updated", "transfer.created", "payout.paid", "payout.failed"):
         from app.modules.payouts.service import PayoutService
 
@@ -184,22 +191,8 @@ async def record_transaction(payment_id: str = Path(...), payload: dict = Body(.
     return {"success": True, "message": "Transaction recorded", "data": txn}
 
 
-@router.post("/{payment_id}/refunds", status_code=status.HTTP_201_CREATED)
-async def request_refund(payment_id: str = Path(...), payload: dict = Body(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    """Request a refund against a completed payment."""
-    refund = await PaymentService.request_refund(db, payment_id, payload, current_user)
-    return {"success": True, "message": "Refund requested", "data": refund}
-
-
 @router.get("/{payment_id}/refunds", status_code=status.HTTP_200_OK)
 async def list_refunds(payment_id: str = Path(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """List all refunds on a given payment."""
     refunds = await PaymentService.get_refunds(db, payment_id, current_user)
     return {"success": True, "message": "Refunds retrieved", "data": refunds}
-
-
-@router.patch("/{payment_id}/refunds/{refund_id}/process", status_code=status.HTTP_200_OK)
-async def process_refund(payment_id: str = Path(...), refund_id: str = Path(...), db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role("admin"))):
-    """Admin only: Mark a refund as processed."""
-    refund = await PaymentService.process_refund(db, refund_id)
-    return {"success": True, "message": "Refund processed", "data": refund}
